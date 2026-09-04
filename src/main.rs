@@ -7,7 +7,7 @@ use rmcp::{ServiceExt, handler::server::wrapper::Parameters, schemars, tool, too
 use tempfile::NamedTempFile;
 use tokio::{fs::File, io::{AsyncBufReadExt, BufReader, stdin, stdout}};
 use clap::Parser;
-use ignore::{DirEntry, WalkBuilder, WalkState, overrides::OverrideBuilder};
+use ignore::{DirEntry, WalkBuilder, WalkState, overrides::{Override, OverrideBuilder}};
 use termcolor::NoColor;
 use anyhow::{Context, Result, bail};
 
@@ -95,6 +95,7 @@ struct GlobParams {
     path: Option<String>,
     head_limit: Option<usize>,
     offset: Option<usize>,
+    max_depth: Option<usize>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Clone)]
@@ -119,6 +120,7 @@ struct GrepParams {
     offset: Option<usize>,
     multiline: Option<bool>,
     show_line_numbers: Option<bool>,
+    max_depth: Option<usize>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -212,34 +214,36 @@ impl Filesystem {
         }
     }
 
-    fn create_walk_builder(&self, abs_path: &Option<PathBuf>) -> WalkBuilder {
+    fn create_walk_builder(&self, abs_path: &Option<PathBuf>, max_depth: &Option<usize>) -> WalkBuilder {
         let mut walk_builder = WalkBuilder::from_iter(match abs_path {
             Some(path) => vec![path.clone()],
             None => self.paths.clone(),
         });
 
-        walk_builder.standard_filters(true);
-
-        walk_builder.require_git(false);
+        walk_builder
+            .standard_filters(true)
+            .require_git(false)
+            .follow_links(true)
+            .max_depth(*max_depth);
 
         walk_builder
     }
 
-    fn walk_builder_add_glob(&self, walk_builder: &mut WalkBuilder, pattern: &str, abs_path: &Option<PathBuf>) -> Result<()> {
-        let mut override_builder = OverrideBuilder::new(match abs_path {
+    fn walk_builder_add_glob(&self, walk_builder: &mut WalkBuilder, pattern: &str, abs_path: &Option<PathBuf>) -> Result<Override> {
+        let mut glob_builder = OverrideBuilder::new(match abs_path {
             Some(abs_path) => abs_path.clone(),
             None => self.root.as_ref().map_or(PathBuf::new(), |p| p.clone()),
         });
 
-        override_builder.add(pattern)
+        glob_builder.add(pattern)
             .context("Failed to add glob a pattern to an override builder")?;
 
-        let r#override = override_builder.build()
+        let glob = glob_builder.build()
             .context("Failed to build an override with a glob pattern")?;
 
-        walk_builder.overrides(r#override);
+        walk_builder.overrides(glob.clone());
 
-        Ok(())
+        Ok(glob)
     }
 
     fn log_tool_error(tool: &str, err: &anyhow::Error) {
@@ -269,13 +273,14 @@ impl Filesystem {
                               path,
                               head_limit,
                               offset,
+                              max_depth,
                           }
                       ): Parameters<GlobParams>) -> Result<String> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
-        let mut walk_builder = self.create_walk_builder(&abs_path);
+        let mut walk_builder = self.create_walk_builder(&abs_path, &max_depth);
 
-        self.walk_builder_add_glob(&mut walk_builder, &pattern, &abs_path)?;
+        let glob = self.walk_builder_add_glob(&mut walk_builder, &pattern, &abs_path)?;
 
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<(SystemTime, String)>(1000);
 
@@ -287,6 +292,7 @@ impl Filesystem {
             walk.run(|| {
                 let sender = sender.clone();
                 let root = root.clone();
+                let glob = glob.clone();
 
                 Box::new(move |result| {
                     let result = match result {
@@ -297,7 +303,7 @@ impl Filesystem {
                         },
                     };
 
-                    if !result.file_type().map_or(false, |ft| ft.is_file()) {
+                    if result.file_type().map_or(false, |ft| ft.is_dir()) && !glob.matched(result.path(), true).is_whitelist() {
                         return WalkState::Continue;
                     }
 
@@ -393,11 +399,12 @@ impl Filesystem {
                               offset,
                               multiline,
                               show_line_numbers,
+                              max_depth,
                           }
                       ): Parameters<GrepParams>) -> Result<String> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
-        let mut walker_builder = self.create_walk_builder(&abs_path);
+        let mut walker_builder = self.create_walk_builder(&abs_path, &max_depth);
 
         if let Some(glob) = glob {
             self.walk_builder_add_glob(&mut walker_builder, &glob, &abs_path)?;
