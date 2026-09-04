@@ -16,20 +16,29 @@ use anyhow::{Context, Result, bail};
 struct Args {
     #[arg(long, num_args = 1..)]
     root: Vec<OsString>,
+
+    #[arg(long, default_value_t = false)]
+    absolute_paths: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let paths = args.root.iter().map(|p| {
+    let paths = args.root;
+
+    if paths.is_empty() {
+        bail!("No paths provided");
+    }
+
+    let paths = paths.iter().map(|p| {
         PathBuf::from(p).canonicalize()
             .with_context(|| format!("Error resolving absolute path for {}", p.display()))
     }).collect::<Result<Vec<PathBuf>, _>>()?;
 
-    let root = get_root_path(&paths)?;
+    let root = if args.absolute_paths { None } else { get_root_path(&paths)? };
 
-    log_info(&format!("Root path: {}", root.display()));
+    log_info(&format!("Root path: {}", root.as_ref().map_or("None".to_string(), |p| p.display().to_string())));
 
     let filesystem = Filesystem {
         root,
@@ -43,23 +52,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn get_root_path(paths: &[PathBuf]) -> Result<PathBuf> {
-    if paths.is_empty() {
-        bail!("No paths provided");
-    }
-
+fn get_root_path(paths: &[PathBuf]) -> Result<Option<PathBuf>> {
     let mut root: &Path = &paths[0];
 
     for path in paths.iter().skip(1) {
         while !path.starts_with(root) {
             match root.parent() {
                 Some(parent) => root = parent,
-                None => break,
+                None => return Ok(None),
             }
         }
     }
 
-    Ok(root.to_path_buf())
+    Ok(Some(root.to_path_buf()))
 }
 
 fn log_info(message: &str) {
@@ -80,7 +85,7 @@ fn log(level: &str, message: &str) {
 
 #[derive(Clone)]
 struct Filesystem {
-    root: PathBuf,
+    root: Option<PathBuf>,
     paths: Vec<PathBuf>,
 }
 
@@ -144,14 +149,18 @@ struct EditParams {
     replace_all: Option<bool>,
 }
 
-fn safe_join(root: &Path, rel_path: &Path) -> Option<PathBuf> {
-    let mut result = root.to_path_buf();
+fn safe_join(root: &Option<PathBuf>, rel_path: &Path) -> Option<PathBuf> {
+    let mut result = root.clone().unwrap_or_default();
 
     for cmp in rel_path.components() {
         match cmp {
-            std::path::Component::Normal(part) => result.push(part),
+            std::path::Component::Prefix(_) | std::path::Component::RootDir if root.is_none() => result.push(cmp),
+            std::path::Component::Normal(_) => result.push(cmp),
             std::path::Component::CurDir => continue,
-            std::path::Component::ParentDir if result != root => { result.pop(); },
+            std::path::Component::ParentDir if match root {
+                Some(root) => *root != result,
+                None => true,
+            } => { result.pop(); },
             _ => return None,
         }
     }
@@ -159,8 +168,11 @@ fn safe_join(root: &Path, rel_path: &Path) -> Option<PathBuf> {
     Some(result)
 }
 
-fn safe_path<'a>(abs_path: &'a Path, root: &Path) -> Result<&'a Path, StripPrefixError> {
-    abs_path.strip_prefix(root)
+fn safe_path<'a>(abs_path: &'a Path, root: &Option<PathBuf>) -> Result<&'a Path, StripPrefixError> {
+    match root {
+        Some(root) => abs_path.strip_prefix(root),
+        None => Ok(abs_path),
+    }
 }
 
 fn get_modified_time(entry: &DirEntry) -> Result<SystemTime, ignore::Error> {
@@ -183,8 +195,8 @@ const DEFAULT_HEAD_LIMIT: usize = 100;
 impl Filesystem {
     fn get_abs_path(&self, path: String) -> Result<PathBuf> {
         if let Some(abs_path) = safe_join(&self.root, Path::new(&path)) {
-            for path in &self.paths {
-                if abs_path.starts_with(path) {
+            for allowed_path in &self.paths {
+                if abs_path.starts_with(allowed_path) {
                     return Ok(abs_path);
                 }
             }
@@ -215,8 +227,8 @@ impl Filesystem {
 
     fn walk_builder_add_glob(&self, walk_builder: &mut WalkBuilder, pattern: &str, abs_path: &Option<PathBuf>) -> Result<()> {
         let mut override_builder = OverrideBuilder::new(match abs_path {
-            Some(path) => path,
-            None => &self.root,
+            Some(abs_path) => abs_path.clone(),
+            None => self.root.as_ref().map_or(PathBuf::new(), |p| p.clone()),
         });
 
         override_builder.add(pattern)
@@ -458,7 +470,7 @@ impl Filesystem {
 
                     let mut data = Vec::new();
 
-                    let mut printer = match output_mode.clone().unwrap_or(GrepOutputMode::Content) {
+                    let mut printer = match output_mode.as_ref().unwrap_or(&GrepOutputMode::Content) {
                         GrepOutputMode::Content => {
                             GrepPrinter::Standard(StandardBuilder::new()
                                 .build_no_color(&mut data))
@@ -499,7 +511,7 @@ impl Filesystem {
                         },
                     };
 
-                    let output = String::from_utf8_lossy(&data).to_string();
+                    let output = String::from_utf8_lossy(&data).into_owned();
 
                     if let Err(err) = sender.blocking_send((modified_time, safe_path.to_path_buf(), output)) {
                         Self::log_tool_warning("grep", &anyhow::Error::new(err));
