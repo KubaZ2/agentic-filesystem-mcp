@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BinaryHeap, ffi::OsString, io::{Error, Seek, Write}, path::{Path, PathBuf, StripPrefixError}, time::SystemTime};
+use std::{cmp::Reverse, collections::BinaryHeap, ffi::OsString, io::{Error, Write}, path::{Path, PathBuf, StripPrefixError}, time::SystemTime};
 use std::fmt::Write as FmtWrite;
 
 use aho_corasick::AhoCorasick;
@@ -9,6 +9,7 @@ use tokio::{fs::File, io::{AsyncBufReadExt, BufReader, stdin, stdout}};
 use clap::Parser;
 use ignore::{DirEntry, WalkBuilder, WalkState, overrides::OverrideBuilder};
 use termcolor::NoColor;
+use anyhow::{Context, Result, bail};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -18,20 +19,34 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let args = Args::parse();
 
     let paths = args.root.iter().map(|p| {
-        match PathBuf::from(p).canonicalize() {
-            Ok(abs_path) => {
-                abs_path
-            },
-            Err(err) => {
-                eprintln!("Error resolving absolute path for {:?}: {}", p, err);
-                std::process::exit(1);
-            }
-        }
-    }).collect::<Vec<PathBuf>>();
+        PathBuf::from(p).canonicalize()
+            .with_context(|| format!("Error resolving absolute path for {}", p.display()))
+    }).collect::<Result<Vec<PathBuf>, _>>()?;
+
+    let root = get_root_path(&paths)?;
+
+    log_info(&format!("Root path: {}", root.display()));
+
+    let filesystem = Filesystem {
+        root,
+        paths,
+    };
+
+    let service = filesystem.serve((stdin(), stdout())).await?;
+
+    service.waiting().await?;
+
+    Ok(())
+}
+
+fn get_root_path(paths: &[PathBuf]) -> Result<PathBuf> {
+    if paths.is_empty() {
+        bail!("No paths provided");
+    }
 
     let mut root: &Path = &paths[0];
 
@@ -44,18 +59,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    eprintln!("Root directory: {}", root.display());
+    Ok(root.to_path_buf())
+}
 
-    let filesystem = Filesystem {
-        root: root.to_path_buf(),
-        paths: paths,
-    };
+fn log_info(message: &str) {
+    log("INFO", message);
+}
 
-    let service = filesystem.serve((stdin(), stdout())).await?;
+fn log_error(message: &str) {
+    log("ERROR", message);
+}
 
-    service.waiting().await?;
+fn log_warning(message: &str) {
+    log("WARNING", message);
+}
 
-    Ok(())
+fn log(level: &str, message: &str) {
+    eprintln!("[{}]: {}", level, message);
 }
 
 #[derive(Clone)]
@@ -124,27 +144,19 @@ struct EditParams {
     replace_all: Option<bool>,
 }
 
-fn safe_join(root: &Path, rel_path: &Path) -> Result<PathBuf, String> {
+fn safe_join(root: &Path, rel_path: &Path) -> Option<PathBuf> {
     let mut result = root.to_path_buf();
 
     for cmp in rel_path.components() {
         match cmp {
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                return Err(format!("Error: Path {} is not within the allowed paths", rel_path.display()));
-            },
-            std::path::Component::CurDir => continue,
-            std::path::Component::ParentDir => {
-                if result == root {
-                    return Err(format!("Error: Path {} is not within the allowed paths", rel_path.display()));
-                }
-
-                result.pop();
-            }
             std::path::Component::Normal(part) => result.push(part),
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir if result != root => { result.pop(); },
+            _ => return None,
         }
     }
 
-    return Ok(result);
+    Some(result)
 }
 
 fn safe_path<'a>(abs_path: &'a Path, root: &Path) -> Result<&'a Path, StripPrefixError> {
@@ -169,21 +181,26 @@ const DEFAULT_HEAD_LIMIT: usize = 100;
 
 #[tool_router(server_handler)]
 impl Filesystem {
-    fn get_abs_path(&self, path: String) -> Result<PathBuf, String> {
-        match safe_join(&self.root, Path::new(&path)) {
-            Ok(joined_path) => Ok(joined_path),
-            Err(err_msg) => Err(err_msg),
+    fn get_abs_path(&self, path: String) -> Result<PathBuf> {
+        if let Some(abs_path) = safe_join(&self.root, Path::new(&path)) {
+            for path in &self.paths {
+                if abs_path.starts_with(path) {
+                    return Ok(abs_path);
+                }
+            }
         }
+
+        bail!("Path is not within the allowed paths");
     }
 
-    fn get_maybe_abs_path(&self, path: Option<String>) -> Result<Option<PathBuf>, String> {
+    fn get_maybe_abs_path(&self, path: Option<String>) -> Result<Option<PathBuf>> {
         match path {
             Some(path) => self.get_abs_path(path).map(Some),
             None => Ok(None),
         }
     }
 
-    fn create_walk_builder(&self, abs_path: &Option<PathBuf>) -> Result<WalkBuilder, String> {
+    fn create_walk_builder(&self, abs_path: &Option<PathBuf>) -> WalkBuilder {
         let mut walk_builder = WalkBuilder::from_iter(match abs_path {
             Some(path) => vec![path.clone()],
             None => self.paths.clone(),
@@ -193,31 +210,47 @@ impl Filesystem {
 
         walk_builder.require_git(false);
 
-        Ok(walk_builder)
+        walk_builder
     }
 
-    fn walk_builder_add_glob(&self, walk_builder: &mut WalkBuilder, pattern: &str, abs_path: &Option<PathBuf>) -> Result<(), String> {
+    fn walk_builder_add_glob(&self, walk_builder: &mut WalkBuilder, pattern: &str, abs_path: &Option<PathBuf>) -> Result<()> {
         let mut override_builder = OverrideBuilder::new(match abs_path {
             Some(path) => path,
             None => &self.root,
         });
 
-        if let Err(err) = override_builder.add(pattern) {
-            return Err(format!("Error: {}", err));
-        }
+        override_builder.add(pattern)
+            .context("Failed to add glob a pattern to an override builder")?;
 
-        let r#override = match override_builder.build() {
-            Ok(o) => o,
-            Err(err) => return Err(format!("Error: {}", err)),
-        };
+        let r#override = override_builder.build()
+            .context("Failed to build an override with a glob pattern")?;
 
         walk_builder.overrides(r#override);
 
         Ok(())
     }
 
+    fn log_tool_error(tool: &str, err: &anyhow::Error) {
+        log_error(&format!("'{}' failed: {:#}", tool, err));
+    }
+
+    fn log_tool_warning(tool: &str, err: &anyhow::Error) {
+        log_warning(&format!("'{}' handled an unexpected error: {:#}", tool, err));
+    }
+
     #[tool(description = "Searches the filesystem for files matching a specific glob pattern.")]
-    pub async fn glob(&self,
+    pub async fn glob(&self, parameters: Parameters<GlobParams>) -> String {
+        match self.try_glob(parameters).await {
+            Ok(result) => result,
+            Err(err) => {
+                Self::log_tool_error("glob", &err);
+
+                err.to_string()
+            },
+        }
+    }
+
+    async fn try_glob(&self,
                       Parameters(
                           GlobParams {
                               pattern,
@@ -225,20 +258,12 @@ impl Filesystem {
                               head_limit,
                               offset,
                           }
-                      ): Parameters<GlobParams>) -> String {
-        let abs_path = match self.get_maybe_abs_path(path) {
-            Ok(abs_path) => abs_path,
-            Err(err_msg) => return err_msg,
-        };
+                      ): Parameters<GlobParams>) -> Result<String> {
+        let abs_path = self.get_maybe_abs_path(path)?;
 
-        let mut walk_builder = match self.create_walk_builder(&abs_path) {
-            Ok(walk_builder) => walk_builder,
-            Err(err_msg) => return err_msg,
-        };
+        let mut walk_builder = self.create_walk_builder(&abs_path);
 
-        if let Err(err_msg) = self.walk_builder_add_glob(&mut walk_builder, &pattern, &abs_path) {
-            return err_msg;
-        };
+        self.walk_builder_add_glob(&mut walk_builder, &pattern, &abs_path)?;
 
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<(SystemTime, String)>(1000);
 
@@ -266,21 +291,22 @@ impl Filesystem {
 
                     let safe_path = match safe_path(result.path(), &root) {
                         Ok(safe_path) => safe_path.display().to_string(),
-                        Err(err_msg) => {
-                            eprintln!("Error: {}", err_msg);
+                        Err(err) => {
+                            Self::log_tool_warning("glob", &anyhow::Error::new(err));
                             return WalkState::Continue;
                         },
                     };
 
                     let modified_time = match get_modified_time(&result) {
                         Ok(modified_time) => modified_time,
-                        Err(err_msg) => {
-                            eprintln!("{}", err_msg);
+                        Err(err) => {
+                            Self::log_tool_warning("glob", &anyhow::Error::new(err));
                             return WalkState::Continue;
                         },
                     };
 
-                    if sender.blocking_send((modified_time, safe_path)).is_err() {
+                    if let Err(err) = sender.blocking_send((modified_time, safe_path)) {
+                        Self::log_tool_warning("glob", &anyhow::Error::new(err));
                         return WalkState::Quit;
                     }
 
@@ -307,17 +333,15 @@ impl Filesystem {
             }
         }
 
-        if let Err(err_msg) = walk_task.await {
-            eprintln!("Error: {}", err_msg);
-            return "Error occurred during file search".to_string();
-        }
+        walk_task.await
+            .context("Searching files failed")?;
 
         if total_results == 0 {
-            return "No results found regardless of the specified offset".to_string();
+            return Ok("No results found regardless of the specified offset".to_string());
         }
 
         if offset >= results.len() {
-            return format!("No results found at the specified offset (found {} in total)", total_results);
+            return Ok(format!("No results found at the specified offset (found {} in total)", total_results));
         }
 
         let result_count = results.len() - offset;
@@ -329,11 +353,22 @@ impl Filesystem {
             response.push('\n');
         }
 
-        response
+        Ok(response)
     }
 
     #[tool(description = "Searches file contents.")]
-    pub async fn grep(&self,
+    pub async fn grep(&self, parameters: Parameters<GrepParams>) -> String {
+        match self.try_grep(parameters).await {
+            Ok(result) => result,
+            Err(err) => {
+                Self::log_tool_error("grep", &err);
+
+                err.to_string()
+            },
+        }
+    }
+
+    async fn try_grep(&self,
                       Parameters(
                           GrepParams {
                               pattern,
@@ -347,27 +382,22 @@ impl Filesystem {
                               multiline,
                               show_line_numbers,
                           }
-                      ): Parameters<GrepParams>) -> String {
-        let abs_path = match self.get_maybe_abs_path(path) {
-            Ok(abs_path) => abs_path,
-            Err(err_msg) => return err_msg,
-        };
+                      ): Parameters<GrepParams>) -> Result<String> {
+        let abs_path = self.get_maybe_abs_path(path)?;
 
-        let mut walker_builder = match self.create_walk_builder(&abs_path) {
-            Ok(walk_builder) => walk_builder,
-            Err(err_msg) => return err_msg,
-        };
+        let mut walker_builder = self.create_walk_builder(&abs_path);
 
         if let Some(glob) = glob {
-            if let Err(err_msg) = self.walk_builder_add_glob(&mut walker_builder, &glob, &abs_path) {
-                return err_msg;
-            };
+            self.walk_builder_add_glob(&mut walker_builder, &glob, &abs_path)?;
         }
 
         let walk = walker_builder.build_parallel();
 
         let mut matcher_builder = RegexMatcherBuilder::new();
-        if multiline.unwrap_or(false) {
+
+        let multiline = multiline.unwrap_or(false);
+
+        if multiline {
             matcher_builder.multi_line(true);
             matcher_builder.dot_matches_new_line(true);
         }
@@ -375,10 +405,8 @@ impl Filesystem {
             matcher_builder.line_terminator(Some(b'\n'));
         }
 
-        let matcher = match matcher_builder.build(&pattern) {
-            Ok(matcher) => matcher,
-            Err(err) => return format!("Error building matcher: {}", err),
-        };
+        let matcher = matcher_builder.build(&pattern)
+            .context("Building regex matcher failed")?;
 
         let mut searcher_builder = SearcherBuilder::new();
 
@@ -386,6 +414,10 @@ impl Filesystem {
         searcher_builder.before_context(before_context.unwrap_or(0));
         searcher_builder.after_context(after_context.unwrap_or(0));
         searcher_builder.line_number(show_line_numbers.unwrap_or(true));
+
+        if multiline {
+            searcher_builder.multi_line(true);
+        }
 
         let searcher = searcher_builder.build();
 
@@ -405,7 +437,7 @@ impl Filesystem {
                     let result = match result {
                         Ok(result) => result,
                         Err(err) => {
-                            eprintln!("Error: {}", err);
+                            Self::log_tool_warning("grep", &anyhow::Error::new(err));
                             return WalkState::Continue;
                         },
                     };
@@ -418,8 +450,8 @@ impl Filesystem {
 
                     let safe_path = match safe_path(path, &root) {
                         Ok(safe_path) => safe_path,
-                        Err(err_msg) => {
-                            eprintln!("Error: {}", err_msg);
+                        Err(err) => {
+                            Self::log_tool_warning("grep", &anyhow::Error::new(err));
                             return WalkState::Continue;
                         },
                     };
@@ -451,7 +483,8 @@ impl Filesystem {
                             searcher.search_path(&matcher, path, p.sink_with_path(&matcher, safe_path))
                         },
                     } {
-                        eprintln!("Error searching file: {}: {}", path.display(), err);
+                        Self::log_tool_warning("grep", &anyhow::Error::new(err));
+                        return WalkState::Continue;
                     }
 
                     if data.is_empty() {
@@ -460,15 +493,16 @@ impl Filesystem {
 
                     let modified_time = match get_modified_time(&result) {
                         Ok(modified_time) => modified_time,
-                        Err(err_msg) => {
-                            eprintln!("{}", err_msg);
+                        Err(err) => {
+                            Self::log_tool_warning("grep", &anyhow::Error::new(err));
                             return WalkState::Continue;
                         },
                     };
 
                     let output = String::from_utf8_lossy(&data).to_string();
 
-                    if sender.blocking_send((modified_time, safe_path.to_path_buf(), output)).is_err() {
+                    if let Err(err) = sender.blocking_send((modified_time, safe_path.to_path_buf(), output)) {
+                        Self::log_tool_warning("grep", &anyhow::Error::new(err));
                         return WalkState::Quit;
                     }
 
@@ -495,17 +529,15 @@ impl Filesystem {
             }
         }
 
-        if let Err(err_msg) = walk_task.await {
-            eprintln!("Error: {}", err_msg);
-            return "Error occurred during file search".to_string();
-        }
+        walk_task.await
+            .context("Searching files failed")?;
 
         if total_results == 0 {
-            return "No results found regardless of the specified offset".to_string();
+            return Ok("No results found regardless of the specified offset".to_string());
         }
 
         if offset >= results.len() {
-            return format!("No results found at the specified offset (found {} in total)", total_results);
+            return Ok(format!("No results found at the specified offset (found {} in total)", total_results));
         }
 
         let result_count = results.len() - offset;
@@ -516,38 +548,37 @@ impl Filesystem {
             response.push_str(&output);
         }
 
-        response
+        Ok(response)
     }
 
     #[tool(description = "Reads the contents of a file.")]
-    async fn read(&self,
-                  Parameters(
-                      ReadParams {
-                          path,
-                          head_limit,
-                          offset ,
-                          show_line_numbers,
-                      }
-                  ): Parameters<ReadParams>) -> String {
-        let abs_path = match self.get_abs_path(path) {
-            Ok(abs_path) => abs_path,
-            Err(err_msg) => return err_msg,
-        };
+    pub async fn read(&self, parameters: Parameters<ReadParams>) -> String {
+        match self.try_read(parameters).await {
+            Ok(result) => result,
+            Err(err) => {
+                Self::log_tool_error("read", &err);
+
+                err.to_string()
+            },
+        }
+    }
+
+    async fn try_read(&self,
+                      Parameters(
+                          ReadParams {
+                              path,
+                              head_limit,
+                              offset ,
+                              show_line_numbers,
+                          }
+                      ): Parameters<ReadParams>) -> Result<String> {
+        let abs_path = self.get_abs_path(path)?;
 
         let head_limit = head_limit.unwrap_or(DEFAULT_HEAD_LIMIT);
         let offset = offset.unwrap_or(0);
 
-        let file = match File::open(&abs_path).await {
-            Ok(file) => file,
-            Err(err) => {
-                let safe_path = match safe_path(&abs_path, &self.root) {
-                    Ok(safe_path) => safe_path,
-                    Err(err_msg) => return format!("Error: {}", err_msg),
-                };
-
-                return format!("Error opening file {}: {}", safe_path.display(), err);
-            }
-        };
+        let file = File::open(&abs_path).await
+            .context("Failed to open the file")?;
 
         let mut reader = BufReader::new(file);
 
@@ -560,162 +591,135 @@ impl Filesystem {
         let mut raw_line = Vec::new();
 
         loop {
-            match reader.read_until(b'\n', &mut raw_line).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    if total_lines >= offset && total_lines < offset + head_limit {
-                        if show_line_numbers {
-                            write!(&mut result, "{}:", total_lines + 1).unwrap();
-                        }
-                        result.push_str(&String::from_utf8_lossy(&raw_line));
-                    }
+            let bytes_read = reader.read_until(b'\n', &mut raw_line).await
+                .context("Failed to read the file")?;
 
-                    total_lines += 1;
-                    raw_line.clear();
-                },
-                Err(err) => {
-                    let safe_path = match safe_path(&abs_path, &self.root) {
-                        Ok(safe_path) => safe_path,
-                        Err(err_msg) => return format!("Error: {}", err_msg),
-                    };
-
-                    return format!("Error reading file {}: {}", safe_path.display(), err);
-                }
+            if bytes_read == 0 {
+                break;
             }
+
+            if total_lines >= offset && total_lines < offset + head_limit {
+                if show_line_numbers {
+                    write!(&mut result, "{}:", total_lines + 1)?;
+                }
+                result.push_str(&String::from_utf8_lossy(&raw_line));
+            }
+
+            total_lines += 1;
+            raw_line.clear();
         }
 
         if total_lines == 0 {
-            return "No results found regardless of the specified offset".to_string();
+            return Ok("No results found regardless of the specified offset".to_string());
         }
 
         if offset >= total_lines {
-            return format!("No results found at the specified offset (file has {} lines in total)", total_lines);
+            return Ok(format!("No results found at the specified offset (file has {} lines in total)", total_lines));
         }
 
         result.insert_str(0, &format!("Showing lines {} to {} (out of {} lines in total):\n", offset + 1, (offset + head_limit).min(total_lines), total_lines));
 
-        result
+        Ok(result)
     }
 
     #[tool(description = "Writes content to a file.")]
-    async fn write(&self,
-                   Parameters(
-                       WriteParams {
-                           path,
-                           content,
-                       }
-                   ): Parameters<WriteParams>) -> String {
-        let abs_path = match self.get_abs_path(path) {
-            Ok(abs_path) => abs_path,
-            Err(err_msg) => return err_msg,
-        };
+    pub async fn write(&self, parameters: Parameters<WriteParams>) -> String {
+        match self.try_write(parameters).await {
+            Ok(result) => result,
+            Err(err) => {
+                Self::log_tool_error("write", &err);
+
+                err.to_string()
+            },
+        }
+    }
+
+    async fn try_write(&self,
+                       Parameters(
+                           WriteParams {
+                               path,
+                               content,
+                           }
+                       ): Parameters<WriteParams>) -> Result<String> {
+        let abs_path = self.get_abs_path(path)?;
 
         if let Some(parent) = abs_path.parent() {
-            if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                let safe_path = match safe_path(&abs_path, &self.root) {
-                    Ok(safe_path) => safe_path,
-                    Err(err_msg) => return format!("Error: {}", err_msg),
-                };
-
-                return format!("Error creating directories for {}: {}", safe_path.display(), err);
-            }
+            tokio::fs::create_dir_all(parent).await
+                .context("Failed to create parent directories for the file")?;
         }
 
-        match tokio::fs::write(&abs_path, content).await {
-            Ok(_) => "Successfully wrote the file".to_string(),
-            Err(err) => {
-                let safe_path = match safe_path(&abs_path, &self.root) {
-                    Ok(safe_path) => safe_path,
-                    Err(err_msg) => return format!("Error: {}", err_msg),
-                };
+        tokio::fs::write(&abs_path, content).await
+            .context("Failed to write to the file")?;
 
-                format!("Error writing to file {}: {}", safe_path.display(), err)
-            }
-        }
+        Ok("Successfully wrote the file".to_string())
     }
 
     #[tool(description = "Creates a new directory.")]
-    async fn mkdir(&self,
-                   Parameters(
-                       MkdirParams {
-                           path,
-                           parents,
-                       }
-                   ): Parameters<MkdirParams>) -> String {
-        let abs_path = match self.get_abs_path(path) {
-            Ok(abs_path) => abs_path,
-            Err(err_msg) => return err_msg,
-        };
-
-        let recursive = parents.unwrap_or(false);
-
-        let result = if recursive {
-            tokio::fs::create_dir_all(&abs_path).await
-        } else {
-            tokio::fs::create_dir(&abs_path).await
-        };
-
-        match result {
-            Ok(_) => "Successfully created the directory".to_string(),
+    pub async fn mkdir(&self, parameters: Parameters<MkdirParams>) -> String {
+        match self.try_mkdir(parameters).await {
+            Ok(result) => result,
             Err(err) => {
-                let safe_path = match safe_path(&abs_path, &self.root) {
-                    Ok(safe_path) => safe_path,
-                    Err(err_msg) => return format!("Error: {}", err_msg),
-                };
+                Self::log_tool_error("mkdir", &err);
 
-                format!("Error creating directory {}: {}", safe_path.display(), err)
-            }
+                err.to_string()
+            },
         }
     }
 
+    async fn try_mkdir(&self,
+                       Parameters(
+                           MkdirParams {
+                               path,
+                               parents,
+                           }
+                       ): Parameters<MkdirParams>) -> anyhow::Result<String> {
+        let abs_path = self.get_abs_path(path)?;
+
+        let parents = parents.unwrap_or(false);
+
+        if parents {
+            tokio::fs::create_dir_all(&abs_path).await
+        } else {
+            tokio::fs::create_dir(&abs_path).await
+        }.context("Failed to create the directory")?;
+
+        Ok("Successfully created the directory".to_string())
+    }
+
     #[tool(description = "Edits a file.")]
-    fn edit(&self,
-                  Parameters(
-                      EditParams {
-                          path,
-                          old_string,
-                          new_string,
-                          replace_all,
-                      }
-                  ): Parameters<EditParams>) -> String {
-        let abs_path = match self.get_abs_path(path) {
-            Ok(abs_path) => abs_path,
-            Err(err_msg) => return err_msg,
-        };
-
-        let mut file = match std::fs::File::open(&abs_path) {
-            Ok(file) => file,
+    pub fn edit(&self, parameters: Parameters<EditParams>) -> String {
+        match self.try_edit(parameters) {
+            Ok(result) => result,
             Err(err) => {
-                let safe_path = match safe_path(&abs_path, &self.root) {
-                    Ok(safe_path) => safe_path,
-                    Err(err_msg) => return format!("Error: {}", err_msg),
-                };
+                Self::log_tool_error("edit", &err);
 
-                return format!("Error opening file {}: {}", safe_path.display(), err);
-            }
-        };
+                err.to_string()
+            },
+        }
+    }
 
-        let file_permissions = match file.metadata() {
-            Ok(metadata) => metadata.permissions(),
-            Err(err) => {
-                let safe_path = match safe_path(&abs_path, &self.root) {
-                    Ok(safe_path) => safe_path,
-                    Err(err_msg) => return format!("Error: {}", err_msg),
-                };
+    fn try_edit(&self,
+                Parameters(
+                    EditParams {
+                        path,
+                        old_string,
+                        new_string,
+                        replace_all,
+                    }
+                ): Parameters<EditParams>) -> Result<String> {
+        let abs_path = self.get_abs_path(path)?;
 
-                return format!("Error getting file metadata for {}: {}", safe_path.display(), err);
-            }
-        };
+        let mut file = std::fs::File::open(&abs_path)?;
 
-        let ac = match AhoCorasick::new([old_string.clone()]) {
-            Ok(ac) => ac,
-            Err(err) => return format!("Error creating Aho-Corasick automaton: {}", err),
-        };
+        let file_permissions = file.metadata()
+            .context("Failed to get file metadata")?
+            .permissions();
 
-        let tempfile = match NamedTempFile::new() {
-            Ok(tempfile) => tempfile,
-            Err(err) => return format!("Error creating temporary file: {}", err),
-        };
+        let ac = AhoCorasick::new([&old_string])
+            .context("Failed to create Aho-Corasick automaton")?;
+
+        let tempfile = NamedTempFile::new()
+            .context("Failed to create a temporary file")?;
 
         let mut writer = std::io::BufWriter::new(tempfile);
 
@@ -723,7 +727,7 @@ impl Filesystem {
 
         let replace_all = replace_all.unwrap_or(false);
 
-        if let Err(err) = if replace_all {
+        if replace_all {
             ac.try_stream_replace_all_with(&mut file, &mut writer, |_, _, writer| {
                     replacements += 1;
                     writer.write_all(new_string.as_bytes())
@@ -736,49 +740,21 @@ impl Filesystem {
                 replacements += 1;
                 writer.write_all(new_string.as_bytes())
             })
-        } {
-            let safe_path = match safe_path(&abs_path, &self.root) {
-                Ok(safe_path) => safe_path,
-                Err(err_msg) => return format!("Error: {}", err_msg),
-            };
-
-            return format!("Error editing file {}: {}", safe_path.display(), err);
-        }
+        }.context("Failed to perform string replacement")?;
 
         if replacements == 0 {
-            return "No matches found for the specified string".to_string();
+            return Ok("No matches found for the specified string".to_string());
         }
 
-        let tempfile = match writer.into_inner() {
-            Ok(tempfile) => tempfile,
-            Err(err) => {
-                let safe_path = match safe_path(&abs_path, &self.root) {
-                    Ok(safe_path) => safe_path,
-                    Err(err_msg) => return format!("Error: {}", err_msg),
-                };
+        let tempfile = writer.into_inner()
+            .context("Failed to flush the temporary file")?;
 
-                return format!("Error finalizing temporary file for {}: {}", safe_path.display(), err);
-            }
-        };
+        tempfile.as_file().set_permissions(file_permissions)
+            .context("Failed to set permissions on the temporary file")?;
 
-        if let Err(err) = tempfile.as_file().set_permissions(file_permissions) {
-            let safe_path = match safe_path(&abs_path, &self.root) {
-                Ok(safe_path) => safe_path,
-                Err(err_msg) => return format!("Error: {}", err_msg),
-            };
+        tempfile.persist(&abs_path)
+            .context("Failed to replace the original file with the edited file")?;
 
-            return format!("Error setting permissions for temporary file for {}: {}", safe_path.display(), err);
-        }
-
-        if let Err(err) = tempfile.persist(&abs_path) {
-            let safe_path = match safe_path(&abs_path, &self.root) {
-                Ok(safe_path) => safe_path,
-                Err(err_msg) => return format!("Error: {}", err_msg),
-            };
-
-            return format!("Error saving changes to file {}: {}", safe_path.display(), err);
-        };
-
-        format!("Successfully edited the file ({} replacement(s) made)", replacements)
+        Ok(format!("Successfully edited the file ({} replacement(s) made)", replacements))
     }
 }
