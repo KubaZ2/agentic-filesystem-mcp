@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aho-corasick = "1.1.5"
 clap = { version = "4.6.6", features = ["derive"] }
 grep = "0.4.1"
 ignore = "0.4.33"
 rmcp = { version = "3.1.4", features = ["server"] }
 serde = "1.0.229"
+tempfile = "3.27.0"
 termcolor = "1.4.1"
 tokio = { version = "1.53.1", features = ["full"] }
