@@ -169,7 +169,7 @@ struct GrepParams {
     glob: Option<String>,
 
     #[schemars(
-        description = "The output mode: `content` (matching lines, default), `files_with_matches` (paths only), or `count` (number of matches).\n\nDefaults to `content` if not specified."
+        description = "The output mode: `content` (matching lines), `files_with_matches` (paths only), or `count` (match counts per file).\n\nDefaults to `content` if not specified."
     )]
     output_mode: Option<GrepOutputMode>,
 
@@ -194,7 +194,7 @@ struct GrepParams {
     offset: Option<usize>,
 
     #[schemars(
-        description = "Whether to enable multiline mode where `.` matches newlines and patterns can span multiple lines.\n\nDefaults to `false` if not specified."
+        description = "Whether to enable multiline mode where `.` matches newlines, `^` and `$` match line boundaries, and patterns can span multiple lines.\n\nDefaults to `false` if not specified."
     )]
     multiline: Option<bool>,
 
@@ -423,7 +423,7 @@ impl Filesystem {
     }
 
     #[tool(
-        description = "Searches the filesystem for files matching a glob pattern. Returns matching file paths sorted by modification time."
+        description = "Searches for files or directories matching a glob pattern and returns them sorted by modification time."
     )]
     pub async fn glob(&self, parameters: Parameters<GlobParams>) -> String {
         match self.try_glob(parameters).await {
@@ -843,7 +843,7 @@ impl Filesystem {
     }
 
     #[tool(
-        description = "Writes a file, automatically creating any missing directories. Completely overwrites the file if one already exists.\n\nIMPORTANT: Because it overwrites entirely, ensure you have the complete file context before modifying existing files. For partial changes to existing files, prefer using the `edit` tool."
+        description = "Writes a file, automatically creating any missing parent directories. Completely overwrites the file if one already exists.\n\nIMPORTANT: Because it overwrites entirely, ensure you have the complete file context before modifying existing files. For partial changes to existing files, prefer using the `edit` tool."
     )]
     pub async fn write(&self, parameters: Parameters<WriteParams>) -> String {
         match self.try_write(parameters).await {
