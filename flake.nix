@@ -3,9 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = { nixpkgs, ... }:
+  outputs = { nixpkgs, rust-overlay, ... }:
   let
     supportedArch = [
       "x86_64-linux"
@@ -19,13 +20,18 @@
   {
     devShells = forAllArch (arch:
       let
-        pkgs = nixpkgs.legacyPackages.${arch};
+        overlays = [
+          (import rust-overlay)
+        ];
+        pkgs = import nixpkgs {
+          system = arch;
+          inherit overlays;
+        };
       in
       {
         default = pkgs.mkShell {
           packages = with pkgs; [
-            cargo
-            rustc
+            (rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
           ];
         };
       }

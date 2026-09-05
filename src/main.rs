@@ -1,15 +1,33 @@
-use std::{cmp::Reverse, collections::BinaryHeap, ffi::OsString, io::{Error, Write}, path::{Path, PathBuf, StripPrefixError}, time::SystemTime};
 use std::fmt::Write as FmtWrite;
+use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
+    ffi::OsString,
+    io::{Error, Write},
+    path::{Path, PathBuf, StripPrefixError},
+    time::SystemTime,
+};
 
 use aho_corasick::AhoCorasick;
-use grep::{printer::{Standard, StandardBuilder, Summary, SummaryBuilder}, regex::RegexMatcherBuilder, searcher::{BinaryDetection, SearcherBuilder}};
+use anyhow::{Context, Result, bail};
+use clap::Parser;
+use grep::{
+    printer::{Standard, StandardBuilder, Summary, SummaryBuilder},
+    regex::RegexMatcherBuilder,
+    searcher::{BinaryDetection, SearcherBuilder},
+};
+use ignore::{
+    DirEntry, WalkBuilder, WalkState,
+    overrides::{Override, OverrideBuilder},
+};
+use parcopy::CopyBuilder;
 use rmcp::{ServiceExt, handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use tempfile::NamedTempFile;
-use tokio::{fs::File, io::{AsyncBufReadExt, BufReader, stdin, stdout}};
-use clap::Parser;
-use ignore::{DirEntry, WalkBuilder, WalkState, overrides::{Override, OverrideBuilder}};
 use termcolor::NoColor;
-use anyhow::{Context, Result, bail};
+use tokio::{
+    fs::File,
+    io::{AsyncBufReadExt, BufReader, stdin, stdout},
+};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -31,19 +49,28 @@ async fn main() -> Result<()> {
         bail!("No paths provided");
     }
 
-    let paths = paths.iter().map(|p| {
-        PathBuf::from(p).canonicalize()
-            .with_context(|| format!("Error resolving absolute path for {}", p.display()))
-    }).collect::<Result<Vec<PathBuf>, _>>()?;
+    let paths = paths
+        .iter()
+        .map(|p| {
+            PathBuf::from(p)
+                .canonicalize()
+                .with_context(|| format!("Error resolving absolute path for {}", p.display()))
+        })
+        .collect::<Result<Vec<PathBuf>, _>>()?;
 
-    let root = if args.absolute_paths { None } else { get_root_path(&paths)? };
-
-    log_info(&format!("Root path: {}", root.as_ref().map_or("None".to_string(), |p| p.display().to_string())));
-
-    let filesystem = Filesystem {
-        root,
-        paths,
+    let root = if args.absolute_paths {
+        None
+    } else {
+        get_root_path(&paths)?
     };
+
+    log_info(&format!(
+        "Root path: {}",
+        root.as_ref()
+            .map_or("None".to_string(), |p| p.display().to_string())
+    ));
+
+    let filesystem = Filesystem { root, paths };
 
     let service = filesystem.serve((stdin(), stdout())).await?;
 
@@ -151,18 +178,43 @@ struct EditParams {
     replace_all: Option<bool>,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct MoveParams {
+    src_path: String,
+    dst_path: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct CopyParams {
+    src_path: String,
+    dst_path: String,
+    recursive: Option<bool>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct RemoveParams {
+    path: String,
+    recursive: Option<bool>,
+}
+
 fn safe_join(root: &Option<PathBuf>, rel_path: &Path) -> Option<PathBuf> {
     let mut result = root.clone().unwrap_or_default();
 
     for cmp in rel_path.components() {
         match cmp {
-            std::path::Component::Prefix(_) | std::path::Component::RootDir if root.is_none() => result.push(cmp),
+            std::path::Component::Prefix(_) | std::path::Component::RootDir if root.is_none() => {
+                result.push(cmp)
+            }
             std::path::Component::Normal(_) => result.push(cmp),
             std::path::Component::CurDir => continue,
-            std::path::Component::ParentDir if match root {
-                Some(root) => *root != result,
-                None => true,
-            } => { result.pop(); },
+            std::path::Component::ParentDir
+                if match root {
+                    Some(root) => *root != result,
+                    None => true,
+                } =>
+            {
+                result.pop();
+            }
             _ => return None,
         }
     }
@@ -186,7 +238,10 @@ fn get_modified_time(entry: &DirEntry) -> Result<SystemTime, ignore::Error> {
 }
 
 #[derive(Clone)]
-enum GrepPrinter<W> where W: Write {
+enum GrepPrinter<W>
+where
+    W: Write,
+{
     Standard(Standard<NoColor<W>>),
     Summary(Summary<NoColor<W>>),
 }
@@ -214,7 +269,11 @@ impl Filesystem {
         }
     }
 
-    fn create_walk_builder(&self, abs_path: &Option<PathBuf>, max_depth: &Option<usize>) -> WalkBuilder {
+    fn create_walk_builder(
+        &self,
+        abs_path: &Option<PathBuf>,
+        max_depth: &Option<usize>,
+    ) -> WalkBuilder {
         let mut walk_builder = WalkBuilder::from_iter(match abs_path {
             Some(path) => vec![path.clone()],
             None => self.paths.clone(),
@@ -223,22 +282,28 @@ impl Filesystem {
         walk_builder
             .standard_filters(true)
             .require_git(false)
-            .follow_links(true)
             .max_depth(*max_depth);
 
         walk_builder
     }
 
-    fn walk_builder_add_glob(&self, walk_builder: &mut WalkBuilder, pattern: &str, abs_path: &Option<PathBuf>) -> Result<Override> {
+    fn walk_builder_add_glob(
+        &self,
+        walk_builder: &mut WalkBuilder,
+        pattern: &str,
+        abs_path: &Option<PathBuf>,
+    ) -> Result<Override> {
         let mut glob_builder = OverrideBuilder::new(match abs_path {
             Some(abs_path) => abs_path.clone(),
             None => self.root.as_ref().map_or(PathBuf::new(), |p| p.clone()),
         });
 
-        glob_builder.add(pattern)
+        glob_builder
+            .add(pattern)
             .context("Failed to add glob a pattern to an override builder")?;
 
-        let glob = glob_builder.build()
+        let glob = glob_builder
+            .build()
             .context("Failed to build an override with a glob pattern")?;
 
         walk_builder.overrides(glob.clone());
@@ -251,7 +316,10 @@ impl Filesystem {
     }
 
     fn log_tool_warning(tool: &str, err: &anyhow::Error) {
-        log_warning(&format!("'{}' handled an unexpected error: {:#}", tool, err));
+        log_warning(&format!(
+            "'{}' handled an unexpected error: {:#}",
+            tool, err
+        ));
     }
 
     #[tool(description = "Searches the filesystem for files matching a specific glob pattern.")]
@@ -262,20 +330,20 @@ impl Filesystem {
                 Self::log_tool_error("glob", &err);
 
                 err.to_string()
-            },
+            }
         }
     }
 
-    async fn try_glob(&self,
-                      Parameters(
-                          GlobParams {
-                              pattern,
-                              path,
-                              head_limit,
-                              offset,
-                              max_depth,
-                          }
-                      ): Parameters<GlobParams>) -> Result<String> {
+    async fn try_glob(
+        &self,
+        Parameters(GlobParams {
+            pattern,
+            path,
+            head_limit,
+            offset,
+            max_depth,
+        }): Parameters<GlobParams>,
+    ) -> Result<String> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
         let mut walk_builder = self.create_walk_builder(&abs_path, &max_depth);
@@ -298,12 +366,14 @@ impl Filesystem {
                     let result = match result {
                         Ok(result) => result,
                         Err(err) => {
-                            eprintln!("Error: {}", err);
+                            Self::log_tool_warning("glob", &anyhow::Error::new(err));
                             return WalkState::Continue;
-                        },
+                        }
                     };
 
-                    if result.file_type().map_or(false, |ft| ft.is_dir()) && !glob.matched(result.path(), true).is_whitelist() {
+                    if result.file_type().map_or(false, |ft| ft.is_dir())
+                        && !glob.matched(result.path(), true).is_whitelist()
+                    {
                         return WalkState::Continue;
                     }
 
@@ -312,7 +382,7 @@ impl Filesystem {
                         Err(err) => {
                             Self::log_tool_warning("glob", &anyhow::Error::new(err));
                             return WalkState::Continue;
-                        },
+                        }
                     };
 
                     let modified_time = match get_modified_time(&result) {
@@ -320,7 +390,7 @@ impl Filesystem {
                         Err(err) => {
                             Self::log_tool_warning("glob", &anyhow::Error::new(err));
                             return WalkState::Continue;
-                        },
+                        }
                     };
 
                     if let Err(err) = sender.blocking_send((modified_time, safe_path)) {
@@ -328,7 +398,7 @@ impl Filesystem {
                         return WalkState::Quit;
                     }
 
-                    ignore::WalkState::Continue
+                    WalkState::Continue
                 })
             })
         });
@@ -351,20 +421,25 @@ impl Filesystem {
             }
         }
 
-        walk_task.await
-            .context("Searching files failed")?;
+        walk_task.await.context("Searching files failed")?;
 
         if total_results == 0 {
             return Ok("No results found regardless of the specified offset".to_string());
         }
 
         if offset >= results.len() {
-            return Ok(format!("No results found at the specified offset (found {} in total)", total_results));
+            return Ok(format!(
+                "No results found at the specified offset (found {} in total)",
+                total_results
+            ));
         }
 
         let result_count = results.len() - offset;
 
-        let mut response = format!("Showing {} result(s) (out of {} found in total):\n", result_count, total_results);
+        let mut response = format!(
+            "Showing {} result(s) (out of {} found in total):\n",
+            result_count, total_results
+        );
 
         for Reverse((_, path)) in &results.into_sorted_vec()[offset..] {
             response.push_str(&path);
@@ -382,26 +457,26 @@ impl Filesystem {
                 Self::log_tool_error("grep", &err);
 
                 err.to_string()
-            },
+            }
         }
     }
 
-    async fn try_grep(&self,
-                      Parameters(
-                          GrepParams {
-                              pattern,
-                              path,
-                              glob,
-                              output_mode,
-                              before_context,
-                              after_context,
-                              head_limit,
-                              offset,
-                              multiline,
-                              show_line_numbers,
-                              max_depth,
-                          }
-                      ): Parameters<GrepParams>) -> Result<String> {
+    async fn try_grep(
+        &self,
+        Parameters(GrepParams {
+            pattern,
+            path,
+            glob,
+            output_mode,
+            before_context,
+            after_context,
+            head_limit,
+            offset,
+            multiline,
+            show_line_numbers,
+            max_depth,
+        }): Parameters<GrepParams>,
+    ) -> Result<String> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
         let mut walker_builder = self.create_walk_builder(&abs_path, &max_depth);
@@ -419,12 +494,12 @@ impl Filesystem {
         if multiline {
             matcher_builder.multi_line(true);
             matcher_builder.dot_matches_new_line(true);
-        }
-        else {
+        } else {
             matcher_builder.line_terminator(Some(b'\n'));
         }
 
-        let matcher = matcher_builder.build(&pattern)
+        let matcher = matcher_builder
+            .build(&pattern)
             .context("Building regex matcher failed")?;
 
         let mut searcher_builder = SearcherBuilder::new();
@@ -440,7 +515,8 @@ impl Filesystem {
 
         let searcher = searcher_builder.build();
 
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<(SystemTime, PathBuf, String)>(1000);
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::channel::<(SystemTime, PathBuf, String)>(1000);
 
         let root = self.root.clone();
 
@@ -458,7 +534,7 @@ impl Filesystem {
                         Err(err) => {
                             Self::log_tool_warning("grep", &anyhow::Error::new(err));
                             return WalkState::Continue;
-                        },
+                        }
                     };
 
                     if !result.file_type().map_or(false, |ft| ft.is_file()) {
@@ -472,35 +548,39 @@ impl Filesystem {
                         Err(err) => {
                             Self::log_tool_warning("grep", &anyhow::Error::new(err));
                             return WalkState::Continue;
-                        },
+                        }
                     };
 
                     let mut data = Vec::new();
 
-                    let mut printer = match output_mode.as_ref().unwrap_or(&GrepOutputMode::Content) {
+                    let mut printer = match output_mode.as_ref().unwrap_or(&GrepOutputMode::Content)
+                    {
                         GrepOutputMode::Content => {
-                            GrepPrinter::Standard(StandardBuilder::new()
-                                .build_no_color(&mut data))
+                            GrepPrinter::Standard(StandardBuilder::new().build_no_color(&mut data))
                         }
-                        GrepOutputMode::FilesWithMatches => {
-                            GrepPrinter::Summary(SummaryBuilder::new()
+                        GrepOutputMode::FilesWithMatches => GrepPrinter::Summary(
+                            SummaryBuilder::new()
                                 .kind(grep::printer::SummaryKind::PathWithMatch)
-                                .build_no_color(&mut data))
-                        },
-                        GrepOutputMode::Count => {
-                            GrepPrinter::Summary(SummaryBuilder::new()
+                                .build_no_color(&mut data),
+                        ),
+                        GrepOutputMode::Count => GrepPrinter::Summary(
+                            SummaryBuilder::new()
                                 .kind(grep::printer::SummaryKind::Count)
-                                .build_no_color(&mut data))
-                        },
+                                .build_no_color(&mut data),
+                        ),
                     };
 
                     if let Err(err) = match printer {
-                        GrepPrinter::Standard(ref mut p) => {
-                            searcher.search_path(&matcher, path, p.sink_with_path(&matcher, safe_path))
-                        },
-                        GrepPrinter::Summary(ref mut p) => {
-                            searcher.search_path(&matcher, path, p.sink_with_path(&matcher, safe_path))
-                        },
+                        GrepPrinter::Standard(ref mut p) => searcher.search_path(
+                            &matcher,
+                            path,
+                            p.sink_with_path(&matcher, safe_path),
+                        ),
+                        GrepPrinter::Summary(ref mut p) => searcher.search_path(
+                            &matcher,
+                            path,
+                            p.sink_with_path(&matcher, safe_path),
+                        ),
                     } {
                         Self::log_tool_warning("grep", &anyhow::Error::new(err));
                         return WalkState::Continue;
@@ -515,12 +595,14 @@ impl Filesystem {
                         Err(err) => {
                             Self::log_tool_warning("grep", &anyhow::Error::new(err));
                             return WalkState::Continue;
-                        },
+                        }
                     };
 
                     let output = String::from_utf8_lossy(&data).into_owned();
 
-                    if let Err(err) = sender.blocking_send((modified_time, safe_path.to_path_buf(), output)) {
+                    if let Err(err) =
+                        sender.blocking_send((modified_time, safe_path.to_path_buf(), output))
+                    {
                         Self::log_tool_warning("grep", &anyhow::Error::new(err));
                         return WalkState::Quit;
                     }
@@ -548,20 +630,25 @@ impl Filesystem {
             }
         }
 
-        walk_task.await
-            .context("Searching files failed")?;
+        walk_task.await.context("Searching files failed")?;
 
         if total_results == 0 {
             return Ok("No results found regardless of the specified offset".to_string());
         }
 
         if offset >= results.len() {
-            return Ok(format!("No results found at the specified offset (found {} in total)", total_results));
+            return Ok(format!(
+                "No results found at the specified offset (found {} in total)",
+                total_results
+            ));
         }
 
         let result_count = results.len() - offset;
 
-        let mut response = format!("Showing {} result(s) (out of {} found in total):\n", result_count, total_results);
+        let mut response = format!(
+            "Showing {} result(s) (out of {} found in total):\n",
+            result_count, total_results
+        );
 
         for Reverse((_, _, output)) in &results.into_sorted_vec()[offset..] {
             response.push_str(&output);
@@ -578,25 +665,26 @@ impl Filesystem {
                 Self::log_tool_error("read", &err);
 
                 err.to_string()
-            },
+            }
         }
     }
 
-    async fn try_read(&self,
-                      Parameters(
-                          ReadParams {
-                              path,
-                              head_limit,
-                              offset ,
-                              show_line_numbers,
-                          }
-                      ): Parameters<ReadParams>) -> Result<String> {
+    async fn try_read(
+        &self,
+        Parameters(ReadParams {
+            path,
+            head_limit,
+            offset,
+            show_line_numbers,
+        }): Parameters<ReadParams>,
+    ) -> Result<String> {
         let abs_path = self.get_abs_path(path)?;
 
         let head_limit = head_limit.unwrap_or(DEFAULT_HEAD_LIMIT);
         let offset = offset.unwrap_or(0);
 
-        let file = File::open(&abs_path).await
+        let file = File::open(&abs_path)
+            .await
             .context("Failed to open the file")?;
 
         let mut reader = BufReader::new(file);
@@ -610,7 +698,9 @@ impl Filesystem {
         let mut raw_line = Vec::new();
 
         loop {
-            let bytes_read = reader.read_until(b'\n', &mut raw_line).await
+            let bytes_read = reader
+                .read_until(b'\n', &mut raw_line)
+                .await
                 .context("Failed to read the file")?;
 
             if bytes_read == 0 {
@@ -633,10 +723,21 @@ impl Filesystem {
         }
 
         if offset >= total_lines {
-            return Ok(format!("No results found at the specified offset (file has {} lines in total)", total_lines));
+            return Ok(format!(
+                "No results found at the specified offset (file has {} lines in total)",
+                total_lines
+            ));
         }
 
-        result.insert_str(0, &format!("Showing lines {} to {} (out of {} lines in total):\n", offset + 1, (offset + head_limit).min(total_lines), total_lines));
+        result.insert_str(
+            0,
+            &format!(
+                "Showing lines {} to {} (out of {} lines in total):\n",
+                offset + 1,
+                (offset + head_limit).min(total_lines),
+                total_lines
+            ),
+        );
 
         Ok(result)
     }
@@ -649,25 +750,24 @@ impl Filesystem {
                 Self::log_tool_error("write", &err);
 
                 err.to_string()
-            },
+            }
         }
     }
 
-    async fn try_write(&self,
-                       Parameters(
-                           WriteParams {
-                               path,
-                               content,
-                           }
-                       ): Parameters<WriteParams>) -> Result<String> {
+    async fn try_write(
+        &self,
+        Parameters(WriteParams { path, content }): Parameters<WriteParams>,
+    ) -> Result<String> {
         let abs_path = self.get_abs_path(path)?;
 
         if let Some(parent) = abs_path.parent() {
-            tokio::fs::create_dir_all(parent).await
+            tokio::fs::create_dir_all(parent)
+                .await
                 .context("Failed to create parent directories for the file")?;
         }
 
-        tokio::fs::write(&abs_path, content).await
+        tokio::fs::write(&abs_path, content)
+            .await
             .context("Failed to write to the file")?;
 
         Ok("Successfully wrote the file".to_string())
@@ -681,17 +781,14 @@ impl Filesystem {
                 Self::log_tool_error("mkdir", &err);
 
                 err.to_string()
-            },
+            }
         }
     }
 
-    async fn try_mkdir(&self,
-                       Parameters(
-                           MkdirParams {
-                               path,
-                               parents,
-                           }
-                       ): Parameters<MkdirParams>) -> anyhow::Result<String> {
+    async fn try_mkdir(
+        &self,
+        Parameters(MkdirParams { path, parents }): Parameters<MkdirParams>,
+    ) -> anyhow::Result<String> {
         let abs_path = self.get_abs_path(path)?;
 
         let parents = parents.unwrap_or(false);
@@ -700,7 +797,8 @@ impl Filesystem {
             tokio::fs::create_dir_all(&abs_path).await
         } else {
             tokio::fs::create_dir(&abs_path).await
-        }.context("Failed to create the directory")?;
+        }
+        .context("Failed to create the directory")?;
 
         Ok("Successfully created the directory".to_string())
     }
@@ -713,32 +811,32 @@ impl Filesystem {
                 Self::log_tool_error("edit", &err);
 
                 err.to_string()
-            },
+            }
         }
     }
 
-    fn try_edit(&self,
-                Parameters(
-                    EditParams {
-                        path,
-                        old_string,
-                        new_string,
-                        replace_all,
-                    }
-                ): Parameters<EditParams>) -> Result<String> {
+    fn try_edit(
+        &self,
+        Parameters(EditParams {
+            path,
+            old_string,
+            new_string,
+            replace_all,
+        }): Parameters<EditParams>,
+    ) -> Result<String> {
         let abs_path = self.get_abs_path(path)?;
 
         let mut file = std::fs::File::open(&abs_path)?;
 
-        let file_permissions = file.metadata()
+        let file_permissions = file
+            .metadata()
             .context("Failed to get file metadata")?
             .permissions();
 
-        let ac = AhoCorasick::new([&old_string])
-            .context("Failed to create Aho-Corasick automaton")?;
+        let ac =
+            AhoCorasick::new([&old_string]).context("Failed to create Aho-Corasick automaton")?;
 
-        let tempfile = NamedTempFile::new()
-            .context("Failed to create a temporary file")?;
+        let tempfile = NamedTempFile::new().context("Failed to create a temporary file")?;
 
         let mut writer = std::io::BufWriter::new(tempfile);
 
@@ -748,32 +846,151 @@ impl Filesystem {
 
         if replace_all {
             ac.try_stream_replace_all_with(&mut file, &mut writer, |_, _, writer| {
-                    replacements += 1;
-                    writer.write_all(new_string.as_bytes())
+                replacements += 1;
+                writer.write_all(new_string.as_bytes())
             })
         } else {
             ac.try_stream_replace_all_with(&mut file, &mut writer, |_, _, writer| {
                 if replacements >= 1 {
-                    return Err(Error::new(std::io::ErrorKind::Other, "Too many matches found for single replacement"));
+                    return Err(Error::new(
+                        std::io::ErrorKind::Other,
+                        "Too many matches found for single replacement",
+                    ));
                 }
                 replacements += 1;
                 writer.write_all(new_string.as_bytes())
             })
-        }.context("Failed to perform string replacement")?;
+        }
+        .context("Failed to perform string replacement")?;
 
         if replacements == 0 {
             return Ok("No matches found for the specified string".to_string());
         }
 
-        let tempfile = writer.into_inner()
+        let tempfile = writer
+            .into_inner()
             .context("Failed to flush the temporary file")?;
 
-        tempfile.as_file().set_permissions(file_permissions)
+        tempfile
+            .as_file()
+            .set_permissions(file_permissions)
             .context("Failed to set permissions on the temporary file")?;
 
-        tempfile.persist(&abs_path)
+        tempfile
+            .persist(&abs_path)
             .context("Failed to replace the original file with the edited file")?;
 
-        Ok(format!("Successfully edited the file ({} replacement(s) made)", replacements))
+        Ok(format!(
+            "Successfully edited the file ({} replacement(s) made)",
+            replacements
+        ))
+    }
+
+    #[tool(name = "move", description = "Moves a file or directory.")]
+    pub async fn r#move(&self, parameters: Parameters<MoveParams>) -> String {
+        match self.try_move(parameters).await {
+            Ok(result) => result,
+            Err(err) => {
+                Self::log_tool_error("move", &err);
+
+                err.to_string()
+            }
+        }
+    }
+
+    async fn try_move(
+        &self,
+        Parameters(MoveParams { src_path, dst_path }): Parameters<MoveParams>,
+    ) -> Result<String> {
+        let abs_src_path = self.get_abs_path(src_path)?;
+        let abs_dst_path = self.get_abs_path(dst_path)?;
+
+        tokio::fs::rename(&abs_src_path, &abs_dst_path)
+            .await
+            .context("Failed to move the file or directory")?;
+
+        Ok("Successfully moved the file or directory".to_string())
+    }
+
+    #[tool(description = "Copies a file or directory.")]
+    pub async fn copy(&self, parameters: Parameters<CopyParams>) -> String {
+        match self.try_copy(parameters).await {
+            Ok(result) => result,
+            Err(err) => {
+                Self::log_tool_error("copy", &err);
+
+                err.to_string()
+            }
+        }
+    }
+
+    async fn try_copy(
+        &self,
+        Parameters(CopyParams {
+            src_path,
+            dst_path,
+            recursive,
+        }): Parameters<CopyParams>,
+    ) -> Result<String> {
+        let abs_src_path = self.get_abs_path(src_path)?;
+        let abs_dst_path = self.get_abs_path(dst_path)?;
+
+        let builder = CopyBuilder::new(&abs_src_path, &abs_dst_path).error_on_conflict();
+
+        if recursive.unwrap_or(false) && abs_src_path.is_dir() {
+            builder
+                .run_dir()
+                .context("Failed to copy the directory recursively")?;
+
+            Ok("Successfully copied the directory recursively".to_string())
+        } else {
+            builder.run_file().context("Failed to copy the file")?;
+
+            Ok("Successfully copied the file".to_string())
+        }
+    }
+
+    #[tool(description = "Removes a file or directory.")]
+    pub async fn remove(&self, parameters: Parameters<RemoveParams>) -> String {
+        match self.try_remove(parameters).await {
+            Ok(result) => result,
+            Err(err) => {
+                Self::log_tool_error("remove", &err);
+
+                err.to_string()
+            }
+        }
+    }
+
+    async fn try_remove(
+        &self,
+        Parameters(RemoveParams { path, recursive }): Parameters<RemoveParams>,
+    ) -> Result<String> {
+        let abs_src_path = self.get_abs_path(path)?;
+
+        let metadata = tokio::fs::metadata(&abs_src_path)
+            .await
+            .context("Failed to get metadata for the file or directory")?;
+
+        if metadata.is_dir() {
+            let recursive = recursive.unwrap_or(false);
+
+            if recursive {
+                tokio::fs::remove_dir_all(&abs_src_path)
+                    .await
+                    .context("Failed to remove the directory recursively")?;
+            } else {
+                tokio::fs::remove_dir(&abs_src_path).await
+                    .context("Failed to remove the directory (consider using recursive option for non-empty directories)")?;
+            }
+
+            Ok("Successfully removed the directory".to_string())
+        } else {
+            tokio::fs::remove_file(&abs_src_path)
+                .await
+                .context("Failed to remove the file")?;
+
+            Ok("Successfully removed the file".to_string())
+        }
     }
 }
