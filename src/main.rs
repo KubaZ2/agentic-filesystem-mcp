@@ -120,7 +120,7 @@ struct Filesystem {
 struct GlobParams {
     pattern: String,
     path: Option<String>,
-    head_limit: Option<usize>,
+    limit: Option<usize>,
     offset: Option<usize>,
     max_depth: Option<usize>,
 }
@@ -143,7 +143,7 @@ struct GrepParams {
     output_mode: Option<GrepOutputMode>,
     before_context: Option<usize>,
     after_context: Option<usize>,
-    head_limit: Option<usize>,
+    limit: Option<usize>,
     offset: Option<usize>,
     multiline: Option<bool>,
     show_line_numbers: Option<bool>,
@@ -153,7 +153,7 @@ struct GrepParams {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ReadParams {
     path: String,
-    head_limit: Option<usize>,
+    limit: Option<usize>,
     offset: Option<usize>,
     show_line_numbers: Option<bool>,
 }
@@ -229,7 +229,7 @@ fn safe_path<'a>(abs_path: &'a Path, root: &Option<PathBuf>) -> Result<&'a Path,
     }
 }
 
-fn get_modified_time(entry: &DirEntry) -> Result<SystemTime, ignore::Error> {
+fn get_modified_time(entry: &DirEntry) -> Result<SystemTime> {
     let metadata = entry.metadata()?;
 
     let modified_time = metadata.modified()?;
@@ -246,7 +246,7 @@ where
     Summary(Summary<NoColor<W>>),
 }
 
-const DEFAULT_HEAD_LIMIT: usize = 100;
+const DEFAULT_LIMIT: usize = 100;
 
 #[tool_router(server_handler)]
 impl Filesystem {
@@ -339,7 +339,7 @@ impl Filesystem {
         Parameters(GlobParams {
             pattern,
             path,
-            head_limit,
+            limit,
             offset,
             max_depth,
         }): Parameters<GlobParams>,
@@ -388,7 +388,7 @@ impl Filesystem {
                     let modified_time = match get_modified_time(&result) {
                         Ok(modified_time) => modified_time,
                         Err(err) => {
-                            Self::log_tool_warning("glob", &anyhow::Error::new(err));
+                            Self::log_tool_warning("glob", &err);
                             return WalkState::Continue;
                         }
                     };
@@ -408,9 +408,9 @@ impl Filesystem {
 
         let offset = offset.unwrap_or(0);
 
-        let head_limit = head_limit.unwrap_or(DEFAULT_HEAD_LIMIT);
+        let limit = limit.unwrap_or(DEFAULT_LIMIT);
 
-        let results_limit = offset + head_limit;
+        let results_limit = offset + limit;
 
         while let Some(result) = receiver.recv().await {
             total_results += 1;
@@ -470,7 +470,7 @@ impl Filesystem {
             output_mode,
             before_context,
             after_context,
-            head_limit,
+            limit,
             offset,
             multiline,
             show_line_numbers,
@@ -593,7 +593,7 @@ impl Filesystem {
                     let modified_time = match get_modified_time(&result) {
                         Ok(modified_time) => modified_time,
                         Err(err) => {
-                            Self::log_tool_warning("grep", &anyhow::Error::new(err));
+                            Self::log_tool_warning("grep", &err);
                             return WalkState::Continue;
                         }
                     };
@@ -617,9 +617,9 @@ impl Filesystem {
 
         let offset = offset.unwrap_or(0);
 
-        let head_limit = head_limit.unwrap_or(DEFAULT_HEAD_LIMIT);
+        let limit = limit.unwrap_or(DEFAULT_LIMIT);
 
-        let results_limit = offset + head_limit;
+        let results_limit = offset + limit;
 
         while let Some(result) = receiver.recv().await {
             total_results += 1;
@@ -673,14 +673,14 @@ impl Filesystem {
         &self,
         Parameters(ReadParams {
             path,
-            head_limit,
+            limit,
             offset,
             show_line_numbers,
         }): Parameters<ReadParams>,
     ) -> Result<String> {
         let abs_path = self.get_abs_path(path)?;
 
-        let head_limit = head_limit.unwrap_or(DEFAULT_HEAD_LIMIT);
+        let limit = limit.unwrap_or(DEFAULT_LIMIT);
         let offset = offset.unwrap_or(0);
 
         let file = File::open(&abs_path)
@@ -707,7 +707,7 @@ impl Filesystem {
                 break;
             }
 
-            if total_lines >= offset && total_lines < offset + head_limit {
+            if total_lines >= offset && total_lines < offset + limit {
                 if show_line_numbers {
                     write!(&mut result, "{}:", total_lines + 1)?;
                 }
@@ -734,7 +734,7 @@ impl Filesystem {
             &format!(
                 "Showing lines {} to {} (out of {} lines in total):\n",
                 offset + 1,
-                (offset + head_limit).min(total_lines),
+                (offset + limit).min(total_lines),
                 total_lines
             ),
         );
