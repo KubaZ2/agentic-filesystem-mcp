@@ -32,9 +32,11 @@ use tokio::{
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
+    // The root paths to serve
     #[arg(long, num_args = 1..)]
     root: Vec<OsString>,
 
+    // Whether to use absolute paths instead of relative paths
     #[arg(long, default_value_t = false)]
     absolute_paths: bool,
 }
@@ -118,11 +120,25 @@ struct Filesystem {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct GlobParams {
+    #[schemars(
+        description = "The glob pattern to match.\n\nIMPORTANT: Patterns like `*.ts` or `src/*.rs` are automatically recursive in this tool. To search ONLY the top-level directory, you MUST use a leading slash (e.g., `/*.ts` or `/src/*.rs`)."
+    )]
     pattern: String,
+
+    #[schemars(
+        description = "The directory to search in.\n\nDefaults to `\".\"` if not specified."
+    )]
     path: Option<String>,
+
+    #[schemars(
+        description = "The maximum number of results to return. Useful for preventing token overflow when a pattern matches thousands of files.\n\nDefaults to `100` if not specified."
+    )]
     limit: Option<usize>,
+
+    #[schemars(
+        description = "The number of results to skip. Used in combination with limit to paginate through large sets of matching files.\n\nDefaults to `0` if not specified."
+    )]
     offset: Option<usize>,
-    max_depth: Option<usize>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Clone)]
@@ -137,63 +153,154 @@ pub enum GrepOutputMode {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct GrepParams {
+    #[schemars(
+        description = "The regular expression pattern to search for in file contents. Uses standard regex syntax.\n\nIMPORTANT: Remember to escape literal characters (e.g., `interface\\{`)."
+    )]
     pattern: String,
+
+    #[schemars(
+        description = "The directory or file to search in.\n\nDefaults to `\".\"` if not specified."
+    )]
     path: Option<String>,
+
+    #[schemars(
+        description = "The glob pattern to filter files to be searched (e.g., `*.{ts,tsx}` or `src/**/*.rs`). Extremely useful for narrowing down searches and improving speed.\n\nDefaults to `null` if not specified."
+    )]
     glob: Option<String>,
+
+    #[schemars(
+        description = "The output mode: `content` (matching lines, default), `files_with_matches` (paths only), or `count` (number of matches).\n\nDefaults to `content` if not specified."
+    )]
     output_mode: Option<GrepOutputMode>,
+
+    #[schemars(
+        description = "The number of lines to show before each match to provide context. Requires `output_mode` to be `content` or omitted. Ignored otherwise.\n\nDefaults to `0` if not specified."
+    )]
     before_context: Option<usize>,
+
+    #[schemars(
+        description = "The number of lines to show after each match to provide context. Requires `output_mode` to be `content` or omitted. Ignored otherwise.\n\nDefaults to `0` if not specified."
+    )]
     after_context: Option<usize>,
+
+    #[schemars(
+        description = "The maximum number of files (not matches) to return. Useful for preventing token overflow when a pattern matches thousands of files/lines.\n\nDefaults to `100` if not specified."
+    )]
     limit: Option<usize>,
+
+    #[schemars(
+        description = "The number of files (not matches) to skip. Used in combination with limit to paginate through large sets of matching files.\n\nDefaults to `0` if not specified."
+    )]
     offset: Option<usize>,
+
+    #[schemars(
+        description = "Whether to enable multiline mode where `.` matches newlines and patterns can span multiple lines.\n\nDefaults to `false` if not specified."
+    )]
     multiline: Option<bool>,
+
+    #[schemars(
+        description = "Whether to show line numbers in the output. Requires `output_mode` to be `content` or omitted. Ignored otherwise.\n\nDefaults to `true` if not specified."
+    )]
     show_line_numbers: Option<bool>,
-    max_depth: Option<usize>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ReadParams {
+    #[schemars(description = "The path to the file to read.")]
     path: String,
+
+    #[schemars(
+        description = "The maximum number of lines to read. Useful for preventing token overflow when reading very large files.\n\nDefaults to `100` if not specified."
+    )]
     limit: Option<usize>,
+
+    #[schemars(
+        description = "The number of lines to skip before starting to read. Used in combination with limit to paginate through large files.\n\nDefaults to `0` if not specified."
+    )]
     offset: Option<usize>,
+
+    #[schemars(
+        description = "Whether to prepend 1-indexed line numbers to each line (e.g., `1:`, `2:`). Setting this to `false` can save tokens when line numbers are strictly not needed.\n\nDefaults to `true` if not specified."
+    )]
     show_line_numbers: Option<bool>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct WriteParams {
+    #[schemars(description = "The path to the file to write.")]
     path: String,
+
+    #[schemars(description = "The complete content to write to the file.")]
     content: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct MkdirParams {
+    #[schemars(description = "The path to the directory to create.")]
     path: String,
+
+    #[schemars(
+        description = "Whether to create parent directories as needed (equivalent to `mkdir -p`). If `true`, no error is thrown if the directory already exists.\n\nDefaults to `false` if not specified."
+    )]
     parents: Option<bool>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EditParams {
+    #[schemars(description = "The path to the file to edit.")]
     path: String,
+
+    #[schemars(
+        description = "The exact text to replace.\n\nIMPORTANT: This must match the file contents exactly, including all indentation, newlines, and whitespace. If you previously read the file with line numbers, you must strip them before matching."
+    )]
     old_string: String,
+
+    #[schemars(
+        description = "The text to replace it with. This will be inserted exactly as provided."
+    )]
     new_string: String,
+
+    #[schemars(
+        description = "Whether to replace all occurrences. Set to `true` to replace every instance instead.\n\nIMPORTANT: If `false` or omitted, the edit will fail if `old_string` appears more than once in the file.\n\nDefaults to `false` if not specified."
+    )]
     replace_all: Option<bool>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct MoveParams {
+    #[schemars(description = "The source path to the file or directory to move or rename.")]
     src_path: String,
+
+    #[schemars(
+        description = "The destination path.\n\nIMPORTANT: This must include the target file or directory name, not just the destination folder."
+    )]
     dst_path: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct CopyParams {
+    #[schemars(description = "The source path to the file or directory to copy.")]
     src_path: String,
+
+    #[schemars(
+        description = "The destination path.\n\nIMPORTANT: This must include the target file or directory name, not just the destination folder."
+    )]
     dst_path: String,
+
+    #[schemars(
+        description = "Whether to recursively copy a directory and its contents.\n\nIMPORTANT: This MUST be set to `true` when copying a directory, otherwise the operation will fail.\n\nDefaults to `false` if not specified."
+    )]
     recursive: Option<bool>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct RemoveParams {
+    #[schemars(description = "The path to the file or directory to remove.")]
     path: String,
+
+    #[schemars(
+        description = "Whether to recursively remove a directory and all its contents.\n\nIMPORTANT: This MUST be set to `true` to remove a non-empty directory.\n\nDefaults to `false` if not specified."
+    )]
     recursive: Option<bool>,
 }
 
@@ -269,20 +376,13 @@ impl Filesystem {
         }
     }
 
-    fn create_walk_builder(
-        &self,
-        abs_path: &Option<PathBuf>,
-        max_depth: &Option<usize>,
-    ) -> WalkBuilder {
+    fn create_walk_builder(&self, abs_path: &Option<PathBuf>) -> WalkBuilder {
         let mut walk_builder = WalkBuilder::from_iter(match abs_path {
             Some(path) => vec![path.clone()],
             None => self.paths.clone(),
         });
 
-        walk_builder
-            .standard_filters(true)
-            .require_git(false)
-            .max_depth(*max_depth);
+        walk_builder.standard_filters(true).require_git(false);
 
         walk_builder
     }
@@ -322,7 +422,9 @@ impl Filesystem {
         ));
     }
 
-    #[tool(description = "Searches the filesystem for files matching a specific glob pattern.")]
+    #[tool(
+        description = "Searches the filesystem for files matching a glob pattern. Returns matching file paths sorted by modification time."
+    )]
     pub async fn glob(&self, parameters: Parameters<GlobParams>) -> String {
         match self.try_glob(parameters).await {
             Ok(result) => result,
@@ -341,12 +443,11 @@ impl Filesystem {
             path,
             limit,
             offset,
-            max_depth,
         }): Parameters<GlobParams>,
     ) -> Result<String> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
-        let mut walk_builder = self.create_walk_builder(&abs_path, &max_depth);
+        let mut walk_builder = self.create_walk_builder(&abs_path);
 
         let glob = self.walk_builder_add_glob(&mut walk_builder, &pattern, &abs_path)?;
 
@@ -449,7 +550,7 @@ impl Filesystem {
         Ok(response)
     }
 
-    #[tool(description = "Searches file contents.")]
+    #[tool(description = "Searches file contents using regular expressions.")]
     pub async fn grep(&self, parameters: Parameters<GrepParams>) -> String {
         match self.try_grep(parameters).await {
             Ok(result) => result,
@@ -474,12 +575,11 @@ impl Filesystem {
             offset,
             multiline,
             show_line_numbers,
-            max_depth,
         }): Parameters<GrepParams>,
     ) -> Result<String> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
-        let mut walker_builder = self.create_walk_builder(&abs_path, &max_depth);
+        let mut walker_builder = self.create_walk_builder(&abs_path);
 
         if let Some(glob) = glob {
             self.walk_builder_add_glob(&mut walker_builder, &glob, &abs_path)?;
@@ -742,7 +842,9 @@ impl Filesystem {
         Ok(result)
     }
 
-    #[tool(description = "Writes content to a file.")]
+    #[tool(
+        description = "Writes a file, automatically creating any missing directories. Completely overwrites the file if one already exists.\n\nIMPORTANT: Because it overwrites entirely, ensure you have the complete file context before modifying existing files. For partial changes to existing files, prefer using the `edit` tool."
+    )]
     pub async fn write(&self, parameters: Parameters<WriteParams>) -> String {
         match self.try_write(parameters).await {
             Ok(result) => result,
@@ -773,7 +875,9 @@ impl Filesystem {
         Ok("Successfully wrote the file".to_string())
     }
 
-    #[tool(description = "Creates a new directory.")]
+    #[tool(
+        description = "Creates a new directory.\n\nIMPORTANT: The `write` tool automatically creates missing parent directories. You DO NOT need to call `mkdir` prior to writing a new file with the `write` tool."
+    )]
     pub async fn mkdir(&self, parameters: Parameters<MkdirParams>) -> String {
         match self.try_mkdir(parameters).await {
             Ok(result) => result,
@@ -803,7 +907,9 @@ impl Filesystem {
         Ok("Successfully created the directory".to_string())
     }
 
-    #[tool(description = "Edits a file.")]
+    #[tool(
+        description = "Performs exact string replacement in a file. Useful for making partial changes to an existing file."
+    )]
     pub fn edit(&self, parameters: Parameters<EditParams>) -> String {
         match self.try_edit(parameters) {
             Ok(result) => result,
@@ -886,7 +992,10 @@ impl Filesystem {
         ))
     }
 
-    #[tool(name = "move", description = "Moves a file or directory.")]
+    #[tool(
+        name = "move",
+        description = "Moves or renames a file or directory.\n\nIMPORTANT: This operation fails if the destination path already exists."
+    )]
     pub async fn r#move(&self, parameters: Parameters<MoveParams>) -> String {
         match self.try_move(parameters).await {
             Ok(result) => result,
@@ -912,7 +1021,9 @@ impl Filesystem {
         Ok("Successfully moved the file or directory".to_string())
     }
 
-    #[tool(description = "Copies a file or directory.")]
+    #[tool(
+        description = "Copies a file or directory to a new location.\n\nIMPORTANT: This operation fails if the destination path already exists."
+    )]
     pub async fn copy(&self, parameters: Parameters<CopyParams>) -> String {
         match self.try_copy(parameters).await {
             Ok(result) => result,
@@ -950,7 +1061,9 @@ impl Filesystem {
         }
     }
 
-    #[tool(description = "Removes a file or directory.")]
+    #[tool(
+        description = "Removes a file or directory.\n\nIMPORTANT: This action is permanent. Always verify the path before calling."
+    )]
     pub async fn remove(&self, parameters: Parameters<RemoveParams>) -> String {
         match self.try_remove(parameters).await {
             Ok(result) => result,
