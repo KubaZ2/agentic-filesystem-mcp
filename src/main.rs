@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
 use std::{
     cmp::Reverse,
@@ -22,10 +23,10 @@ use ignore::{
 };
 use parcopy::CopyBuilder;
 use rmcp::model::{CallToolResult, ContentBlock};
-use rmcp::serde_json;
 use rmcp::{ServiceExt, handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use tempfile::NamedTempFile;
 use termcolor::NoColor;
+use tokio::io::AsyncReadExt;
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, BufReader, stdin, stdout},
@@ -74,7 +75,7 @@ async fn main() -> Result<()> {
             .map_or("None".to_string(), |p| p.display().to_string())
     ));
 
-    let filesystem = Filesystem { root, paths };
+    let filesystem = Filesystem::new(root, paths);
 
     let service = filesystem.serve((stdin(), stdout())).await?;
 
@@ -118,6 +119,7 @@ fn log(level: &str, message: &str) {
 struct Filesystem {
     root: Option<PathBuf>,
     paths: Vec<PathBuf>,
+    media_mime_types: HashMap<&'static str, MimeType>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -357,8 +359,37 @@ where
 
 const DEFAULT_LIMIT: usize = 100;
 
+#[derive(Clone)]
+enum MimeType {
+    Image(&'static str),
+    Audio(&'static str),
+}
+
 #[tool_router(server_handler)]
 impl Filesystem {
+    fn new(root: Option<PathBuf>, paths: Vec<PathBuf>) -> Self {
+        let media_mime_types = HashMap::from([
+            ("png", MimeType::Image("image/png")),
+            ("jpg", MimeType::Image("image/jpeg")),
+            ("jpeg", MimeType::Image("image/jpeg")),
+            ("gif", MimeType::Image("image/gif")),
+            ("webp", MimeType::Image("image/webp")),
+            ("bmp", MimeType::Image("image/bmp")),
+            ("svg", MimeType::Image("image/svg+xml")),
+            ("mp3", MimeType::Audio("audio/mpeg")),
+            ("wav", MimeType::Audio("audio/wav")),
+            ("ogg", MimeType::Audio("audio/ogg")),
+            ("opus", MimeType::Audio("audio/ogg")),
+            ("flac", MimeType::Audio("audio/flac")),
+        ]);
+
+        Filesystem {
+            root,
+            paths,
+            media_mime_types,
+        }
+    }
+
     fn get_abs_path(&self, path: &str) -> Result<PathBuf> {
         if let Some(abs_path) = safe_join(&self.root, Path::new(path)) {
             for allowed_path in &self.paths {
@@ -429,7 +460,7 @@ impl Filesystem {
     )]
     pub async fn glob(&self, parameters: Parameters<GlobParams>) -> CallToolResult {
         match self.try_glob(parameters).await {
-            Ok(result) => result,
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
             Err(err) => {
                 Self::log_tool_error("glob", &err);
 
@@ -446,7 +477,7 @@ impl Filesystem {
             limit,
             offset,
         }): Parameters<GlobParams>,
-    ) -> Result<CallToolResult> {
+    ) -> Result<String> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
         let mut walk_builder = self.create_walk_builder(&abs_path);
@@ -526,39 +557,14 @@ impl Filesystem {
 
         walk_task.await.context("Searching files failed")?;
 
-        fn create_response(
-            message: String,
-            results: &[&str],
-            total_result_count: usize,
-        ) -> CallToolResult {
-            let mut response = CallToolResult::default();
-            response.content.push(ContentBlock::text(message));
-            response.structured_content = Some(serde_json::json!({
-                "results": results,
-                "result_count": results.len(),
-                "total_result_count": total_result_count,
-            }));
-            response.is_error = Some(false);
-
-            response
-        }
-
         if total_results == 0 {
-            return Ok(create_response(
-                "No results found regardless of the specified offset".to_string(),
-                &[],
-                total_results,
-            ));
+            return Ok("No results found regardless of the specified offset".to_string());
         }
 
         if offset >= results.len() {
-            return Ok(create_response(
-                format!(
-                    "No results found at the specified offset (found {} in total)",
-                    total_results
-                ),
-                &[],
-                total_results,
+            return Ok(format!(
+                "No results found at the specified offset (found {} in total)",
+                total_results
             ));
         }
 
@@ -572,24 +578,17 @@ impl Filesystem {
         let page = &results.into_sorted_vec()[offset..];
 
         for Reverse((_, path)) in page {
-            response.push_str(&path);
+            response.push_str(path);
             response.push('\n');
         }
 
-        Ok(create_response(
-            response,
-            &page
-                .iter()
-                .map(|Reverse((_, path))| path.as_str())
-                .collect::<Vec<&str>>(),
-            total_results,
-        ))
+        Ok(response)
     }
 
     #[tool(description = "Searches file contents using regular expressions.")]
     pub async fn grep(&self, parameters: Parameters<GrepParams>) -> CallToolResult {
         match self.try_grep(parameters).await {
-            Ok(result) => result,
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
             Err(err) => {
                 Self::log_tool_error("grep", &err);
 
@@ -612,7 +611,7 @@ impl Filesystem {
             multiline,
             show_line_numbers,
         }): Parameters<GrepParams>,
-    ) -> Result<CallToolResult> {
+    ) -> Result<String> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
         let mut walker_builder = self.create_walk_builder(&abs_path);
@@ -768,39 +767,14 @@ impl Filesystem {
 
         walk_task.await.context("Searching files failed")?;
 
-        fn create_response(
-            message: String,
-            results: &[&str],
-            total_result_count: usize,
-        ) -> CallToolResult {
-            let mut response = CallToolResult::default();
-            response.content.push(ContentBlock::text(message));
-            response.structured_content = Some(serde_json::json!({
-                "results": results,
-                "result_count": results.len(),
-                "total_result_count": total_result_count,
-            }));
-            response.is_error = Some(false);
-
-            response
-        }
-
         if total_results == 0 {
-            return Ok(create_response(
-                "No results found regardless of the specified offset".to_string(),
-                &[],
-                total_results,
-            ));
+            return Ok("No results found regardless of the specified offset".to_string());
         }
 
         if offset >= results.len() {
-            return Ok(create_response(
-                format!(
-                    "No results found at the specified offset (found {} in total)",
-                    total_results
-                ),
-                &[],
-                total_results,
+            return Ok(format!(
+                "No results found at the specified offset (found {} in total)",
+                total_results
             ));
         }
 
@@ -814,17 +788,10 @@ impl Filesystem {
         let page = &results.into_sorted_vec()[offset..];
 
         for Reverse((_, _, output)) in page {
-            response.push_str(&output);
+            response.push_str(output);
         }
 
-        Ok(create_response(
-            response,
-            &page
-                .iter()
-                .map(|Reverse((_, _, output))| output.as_str())
-                .collect::<Vec<&str>>(),
-            total_results,
-        ))
+        Ok(response)
     }
 
     #[tool(description = "Reads the contents of a file.")]
@@ -839,25 +806,73 @@ impl Filesystem {
         }
     }
 
-    async fn try_read(
-        &self,
-        Parameters(ReadParams {
-            path,
-            limit,
-            offset,
-            show_line_numbers,
-        }): Parameters<ReadParams>,
-    ) -> Result<CallToolResult> {
-        let abs_path = self.get_abs_path(&path)?;
-
-        let limit = limit.unwrap_or(DEFAULT_LIMIT);
-        let offset = offset.unwrap_or(0);
+    async fn try_read(&self, parameters: Parameters<ReadParams>) -> Result<CallToolResult> {
+        let abs_path = self.get_abs_path(&parameters.0.path)?;
 
         let file = File::open(&abs_path)
             .await
             .context("Failed to open the file")?;
 
+        if let Some(extension) = abs_path.extension()
+            && let Some(extension) = extension.to_str()
+            && let Some(media_mime_type) =
+                self.media_mime_types.get(extension.to_lowercase().as_str())
+        {
+            return self.try_read_media(media_mime_type, file).await;
+        }
+
+        self.try_read_text(file, parameters).await
+    }
+
+    async fn try_read_media(&self, mime_type: &MimeType, mut file: File) -> Result<CallToolResult> {
+        let data = Vec::new();
+
+        let mut encoder =
+            base64::write::EncoderWriter::new(data, &base64::engine::general_purpose::STANDARD);
+
+        let mut buf = [0u8; 8192];
+
+        loop {
+            let bytes_read = file
+                .read(&mut buf)
+                .await
+                .context("Failed to read the media file")?;
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            encoder
+                .write_all(&buf[..bytes_read])
+                .context("Failed to encode the media file")?;
+        }
+
+        let data = encoder
+            .finish()
+            .context("Failed to finish encoding the media file")?;
+
+        let data = String::from_utf8(data)?;
+
+        Ok(CallToolResult::success(vec![match mime_type {
+            MimeType::Image(mime) => ContentBlock::image(&data, *mime),
+            MimeType::Audio(mime) => ContentBlock::audio(&data, *mime),
+        }]))
+    }
+
+    async fn try_read_text(
+        &self,
+        file: File,
+        Parameters(ReadParams {
+            path: _,
+            limit,
+            offset,
+            show_line_numbers,
+        }): Parameters<ReadParams>,
+    ) -> Result<CallToolResult> {
         let mut reader = BufReader::new(file);
+
+        let limit = limit.unwrap_or(DEFAULT_LIMIT);
+        let offset = offset.unwrap_or(0);
 
         let mut content = String::new();
 
@@ -888,64 +903,26 @@ impl Filesystem {
             raw_line.clear();
         }
 
-        fn create_response(
-            message: String,
-            content: Option<&str>,
-            first_line: Option<usize>,
-            last_line: Option<usize>,
-            total_line_count: usize,
-        ) -> CallToolResult {
-            let mut response = CallToolResult::default();
-            response.content.push(ContentBlock::text(message));
-            response.structured_content = Some(serde_json::json!({
-                "content": content,
-                "first_line": first_line,
-                "last_line": last_line,
-                "total_line_count": total_line_count,
-            }));
-            response.is_error = Some(false);
-
-            response
-        }
-
         if total_lines == 0 {
-            return Ok(create_response(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "The file is empty".to_string(),
-                Some(""),
-                None,
-                None,
-                total_lines,
-            ));
+            )]));
         }
 
         if offset >= total_lines {
-            return Ok(create_response(
-                format!(
-                    "No lines to show at the specified offset (file has {} lines in total)",
-                    total_lines
-                ),
-                None,
-                None,
-                None,
-                total_lines,
-            ));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                "No lines to show at the specified offset (the file has {} lines in total)",
+                total_lines
+            ))]));
         }
 
         let first_line = offset + 1;
         let last_line = (offset + limit).min(total_lines);
 
-        let message = format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "Showing lines {} to {} (out of {} lines in total):\n{}",
             first_line, last_line, total_lines, content,
-        );
-
-        Ok(create_response(
-            message,
-            Some(&content),
-            Some(first_line),
-            Some(last_line),
-            total_lines,
-        ))
+        ))]))
     }
 
     #[tool(
