@@ -21,6 +21,8 @@ use ignore::{
     overrides::{Override, OverrideBuilder},
 };
 use parcopy::CopyBuilder;
+use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::serde_json;
 use rmcp::{ServiceExt, handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use tempfile::NamedTempFile;
 use termcolor::NoColor;
@@ -357,8 +359,8 @@ const DEFAULT_LIMIT: usize = 100;
 
 #[tool_router(server_handler)]
 impl Filesystem {
-    fn get_abs_path(&self, path: String) -> Result<PathBuf> {
-        if let Some(abs_path) = safe_join(&self.root, Path::new(&path)) {
+    fn get_abs_path(&self, path: &str) -> Result<PathBuf> {
+        if let Some(abs_path) = safe_join(&self.root, Path::new(path)) {
             for allowed_path in &self.paths {
                 if abs_path.starts_with(allowed_path) {
                     return Ok(abs_path);
@@ -371,7 +373,7 @@ impl Filesystem {
 
     fn get_maybe_abs_path(&self, path: Option<String>) -> Result<Option<PathBuf>> {
         match path {
-            Some(path) => self.get_abs_path(path).map(Some),
+            Some(path) => self.get_abs_path(&path).map(Some),
             None => Ok(None),
         }
     }
@@ -425,13 +427,13 @@ impl Filesystem {
     #[tool(
         description = "Searches for files or directories matching a glob pattern and returns them sorted by modification time."
     )]
-    pub async fn glob(&self, parameters: Parameters<GlobParams>) -> String {
+    pub async fn glob(&self, parameters: Parameters<GlobParams>) -> CallToolResult {
         match self.try_glob(parameters).await {
             Ok(result) => result,
             Err(err) => {
                 Self::log_tool_error("glob", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -444,7 +446,7 @@ impl Filesystem {
             limit,
             offset,
         }): Parameters<GlobParams>,
-    ) -> Result<String> {
+    ) -> Result<CallToolResult> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
         let mut walk_builder = self.create_walk_builder(&abs_path);
@@ -524,14 +526,39 @@ impl Filesystem {
 
         walk_task.await.context("Searching files failed")?;
 
+        fn create_response(
+            message: String,
+            results: &[&str],
+            total_result_count: usize,
+        ) -> CallToolResult {
+            let mut response = CallToolResult::default();
+            response.content.push(ContentBlock::text(message));
+            response.structured_content = Some(serde_json::json!({
+                "results": results,
+                "result_count": results.len(),
+                "total_result_count": total_result_count,
+            }));
+            response.is_error = Some(false);
+
+            response
+        }
+
         if total_results == 0 {
-            return Ok("No results found regardless of the specified offset".to_string());
+            return Ok(create_response(
+                "No results found regardless of the specified offset".to_string(),
+                &[],
+                total_results,
+            ));
         }
 
         if offset >= results.len() {
-            return Ok(format!(
-                "No results found at the specified offset (found {} in total)",
-                total_results
+            return Ok(create_response(
+                format!(
+                    "No results found at the specified offset (found {} in total)",
+                    total_results
+                ),
+                &[],
+                total_results,
             ));
         }
 
@@ -542,22 +569,31 @@ impl Filesystem {
             result_count, total_results
         );
 
-        for Reverse((_, path)) in &results.into_sorted_vec()[offset..] {
+        let page = &results.into_sorted_vec()[offset..];
+
+        for Reverse((_, path)) in page {
             response.push_str(&path);
             response.push('\n');
         }
 
-        Ok(response)
+        Ok(create_response(
+            response,
+            &page
+                .iter()
+                .map(|Reverse((_, path))| path.as_str())
+                .collect::<Vec<&str>>(),
+            total_results,
+        ))
     }
 
     #[tool(description = "Searches file contents using regular expressions.")]
-    pub async fn grep(&self, parameters: Parameters<GrepParams>) -> String {
+    pub async fn grep(&self, parameters: Parameters<GrepParams>) -> CallToolResult {
         match self.try_grep(parameters).await {
             Ok(result) => result,
             Err(err) => {
                 Self::log_tool_error("grep", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -576,7 +612,7 @@ impl Filesystem {
             multiline,
             show_line_numbers,
         }): Parameters<GrepParams>,
-    ) -> Result<String> {
+    ) -> Result<CallToolResult> {
         let abs_path = self.get_maybe_abs_path(path)?;
 
         let mut walker_builder = self.create_walk_builder(&abs_path);
@@ -732,14 +768,39 @@ impl Filesystem {
 
         walk_task.await.context("Searching files failed")?;
 
+        fn create_response(
+            message: String,
+            results: &[&str],
+            total_result_count: usize,
+        ) -> CallToolResult {
+            let mut response = CallToolResult::default();
+            response.content.push(ContentBlock::text(message));
+            response.structured_content = Some(serde_json::json!({
+                "results": results,
+                "result_count": results.len(),
+                "total_result_count": total_result_count,
+            }));
+            response.is_error = Some(false);
+
+            response
+        }
+
         if total_results == 0 {
-            return Ok("No results found regardless of the specified offset".to_string());
+            return Ok(create_response(
+                "No results found regardless of the specified offset".to_string(),
+                &[],
+                total_results,
+            ));
         }
 
         if offset >= results.len() {
-            return Ok(format!(
-                "No results found at the specified offset (found {} in total)",
-                total_results
+            return Ok(create_response(
+                format!(
+                    "No results found at the specified offset (found {} in total)",
+                    total_results
+                ),
+                &[],
+                total_results,
             ));
         }
 
@@ -750,21 +811,30 @@ impl Filesystem {
             result_count, total_results
         );
 
-        for Reverse((_, _, output)) in &results.into_sorted_vec()[offset..] {
+        let page = &results.into_sorted_vec()[offset..];
+
+        for Reverse((_, _, output)) in page {
             response.push_str(&output);
         }
 
-        Ok(response)
+        Ok(create_response(
+            response,
+            &page
+                .iter()
+                .map(|Reverse((_, _, output))| output.as_str())
+                .collect::<Vec<&str>>(),
+            total_results,
+        ))
     }
 
     #[tool(description = "Reads the contents of a file.")]
-    pub async fn read(&self, parameters: Parameters<ReadParams>) -> String {
+    pub async fn read(&self, parameters: Parameters<ReadParams>) -> CallToolResult {
         match self.try_read(parameters).await {
             Ok(result) => result,
             Err(err) => {
                 Self::log_tool_error("read", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -777,8 +847,8 @@ impl Filesystem {
             offset,
             show_line_numbers,
         }): Parameters<ReadParams>,
-    ) -> Result<String> {
-        let abs_path = self.get_abs_path(path)?;
+    ) -> Result<CallToolResult> {
+        let abs_path = self.get_abs_path(&path)?;
 
         let limit = limit.unwrap_or(DEFAULT_LIMIT);
         let offset = offset.unwrap_or(0);
@@ -789,7 +859,7 @@ impl Filesystem {
 
         let mut reader = BufReader::new(file);
 
-        let mut result = String::new();
+        let mut content = String::new();
 
         let mut total_lines: usize = 0;
 
@@ -809,49 +879,85 @@ impl Filesystem {
 
             if total_lines >= offset && total_lines < offset + limit {
                 if show_line_numbers {
-                    write!(&mut result, "{}:", total_lines + 1)?;
+                    write!(&mut content, "{}:", total_lines + 1)?;
                 }
-                result.push_str(&String::from_utf8_lossy(&raw_line));
+                content.push_str(&String::from_utf8_lossy(&raw_line));
             }
 
             total_lines += 1;
             raw_line.clear();
         }
 
-        if total_lines == 0 {
-            return Ok("No results found regardless of the specified offset".to_string());
+        fn create_response(
+            message: String,
+            content: Option<&str>,
+            first_line: Option<usize>,
+            last_line: Option<usize>,
+            total_line_count: usize,
+        ) -> CallToolResult {
+            let mut response = CallToolResult::default();
+            response.content.push(ContentBlock::text(message));
+            response.structured_content = Some(serde_json::json!({
+                "content": content,
+                "first_line": first_line,
+                "last_line": last_line,
+                "total_line_count": total_line_count,
+            }));
+            response.is_error = Some(false);
+
+            response
         }
 
-        if offset >= total_lines {
-            return Ok(format!(
-                "No results found at the specified offset (file has {} lines in total)",
-                total_lines
+        if total_lines == 0 {
+            return Ok(create_response(
+                "The file is empty".to_string(),
+                Some(""),
+                None,
+                None,
+                total_lines,
             ));
         }
 
-        result.insert_str(
-            0,
-            &format!(
-                "Showing lines {} to {} (out of {} lines in total):\n",
-                offset + 1,
-                (offset + limit).min(total_lines),
-                total_lines
-            ),
+        if offset >= total_lines {
+            return Ok(create_response(
+                format!(
+                    "No lines to show at the specified offset (file has {} lines in total)",
+                    total_lines
+                ),
+                None,
+                None,
+                None,
+                total_lines,
+            ));
+        }
+
+        let first_line = offset + 1;
+        let last_line = (offset + limit).min(total_lines);
+
+        let message = format!(
+            "Showing lines {} to {} (out of {} lines in total):\n{}",
+            first_line, last_line, total_lines, content,
         );
 
-        Ok(result)
+        Ok(create_response(
+            message,
+            Some(&content),
+            Some(first_line),
+            Some(last_line),
+            total_lines,
+        ))
     }
 
     #[tool(
         description = "Writes a file, automatically creating any missing parent directories. Completely overwrites the file if one already exists.\n\nIMPORTANT: Because it overwrites entirely, ensure you have the complete file context before modifying existing files. For partial changes to existing files, prefer using the `edit` tool."
     )]
-    pub async fn write(&self, parameters: Parameters<WriteParams>) -> String {
+    pub async fn write(&self, parameters: Parameters<WriteParams>) -> CallToolResult {
         match self.try_write(parameters).await {
-            Ok(result) => result,
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
             Err(err) => {
                 Self::log_tool_error("write", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -860,7 +966,7 @@ impl Filesystem {
         &self,
         Parameters(WriteParams { path, content }): Parameters<WriteParams>,
     ) -> Result<String> {
-        let abs_path = self.get_abs_path(path)?;
+        let abs_path = self.get_abs_path(&path)?;
 
         if let Some(parent) = abs_path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -878,13 +984,13 @@ impl Filesystem {
     #[tool(
         description = "Creates a new directory.\n\nIMPORTANT: The `write` tool automatically creates missing parent directories. You DO NOT need to call `mkdir` prior to writing a new file with the `write` tool."
     )]
-    pub async fn mkdir(&self, parameters: Parameters<MkdirParams>) -> String {
+    pub async fn mkdir(&self, parameters: Parameters<MkdirParams>) -> CallToolResult {
         match self.try_mkdir(parameters).await {
-            Ok(result) => result,
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
             Err(err) => {
                 Self::log_tool_error("mkdir", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -893,7 +999,7 @@ impl Filesystem {
         &self,
         Parameters(MkdirParams { path, parents }): Parameters<MkdirParams>,
     ) -> anyhow::Result<String> {
-        let abs_path = self.get_abs_path(path)?;
+        let abs_path = self.get_abs_path(&path)?;
 
         let parents = parents.unwrap_or(false);
 
@@ -910,13 +1016,13 @@ impl Filesystem {
     #[tool(
         description = "Performs exact string replacement in a file. Useful for making partial changes to an existing file."
     )]
-    pub fn edit(&self, parameters: Parameters<EditParams>) -> String {
+    pub fn edit(&self, parameters: Parameters<EditParams>) -> CallToolResult {
         match self.try_edit(parameters) {
-            Ok(result) => result,
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
             Err(err) => {
                 Self::log_tool_error("edit", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -930,7 +1036,7 @@ impl Filesystem {
             replace_all,
         }): Parameters<EditParams>,
     ) -> Result<String> {
-        let abs_path = self.get_abs_path(path)?;
+        let abs_path = self.get_abs_path(&path)?;
 
         let mut file = std::fs::File::open(&abs_path)?;
 
@@ -996,13 +1102,13 @@ impl Filesystem {
         name = "move",
         description = "Moves or renames a file or directory.\n\nIMPORTANT: This operation fails if the destination path already exists."
     )]
-    pub async fn r#move(&self, parameters: Parameters<MoveParams>) -> String {
+    pub async fn r#move(&self, parameters: Parameters<MoveParams>) -> CallToolResult {
         match self.try_move(parameters).await {
-            Ok(result) => result,
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
             Err(err) => {
                 Self::log_tool_error("move", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -1011,8 +1117,8 @@ impl Filesystem {
         &self,
         Parameters(MoveParams { src_path, dst_path }): Parameters<MoveParams>,
     ) -> Result<String> {
-        let abs_src_path = self.get_abs_path(src_path)?;
-        let abs_dst_path = self.get_abs_path(dst_path)?;
+        let abs_src_path = self.get_abs_path(&src_path)?;
+        let abs_dst_path = self.get_abs_path(&dst_path)?;
 
         tokio::fs::rename(&abs_src_path, &abs_dst_path)
             .await
@@ -1024,13 +1130,13 @@ impl Filesystem {
     #[tool(
         description = "Copies a file or directory to a new location.\n\nIMPORTANT: This operation fails if the destination path already exists."
     )]
-    pub async fn copy(&self, parameters: Parameters<CopyParams>) -> String {
+    pub async fn copy(&self, parameters: Parameters<CopyParams>) -> CallToolResult {
         match self.try_copy(parameters).await {
-            Ok(result) => result,
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
             Err(err) => {
                 Self::log_tool_error("copy", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -1043,8 +1149,8 @@ impl Filesystem {
             recursive,
         }): Parameters<CopyParams>,
     ) -> Result<String> {
-        let abs_src_path = self.get_abs_path(src_path)?;
-        let abs_dst_path = self.get_abs_path(dst_path)?;
+        let abs_src_path = self.get_abs_path(&src_path)?;
+        let abs_dst_path = self.get_abs_path(&dst_path)?;
 
         let builder = CopyBuilder::new(&abs_src_path, &abs_dst_path).error_on_conflict();
 
@@ -1064,13 +1170,13 @@ impl Filesystem {
     #[tool(
         description = "Removes a file or directory.\n\nIMPORTANT: This action is permanent. Always verify the path before calling."
     )]
-    pub async fn remove(&self, parameters: Parameters<RemoveParams>) -> String {
+    pub async fn remove(&self, parameters: Parameters<RemoveParams>) -> CallToolResult {
         match self.try_remove(parameters).await {
-            Ok(result) => result,
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
             Err(err) => {
                 Self::log_tool_error("remove", &err);
 
-                err.to_string()
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
             }
         }
     }
@@ -1079,7 +1185,7 @@ impl Filesystem {
         &self,
         Parameters(RemoveParams { path, recursive }): Parameters<RemoveParams>,
     ) -> Result<String> {
-        let abs_src_path = self.get_abs_path(path)?;
+        let abs_src_path = self.get_abs_path(&path)?;
 
         let metadata = tokio::fs::metadata(&abs_src_path)
             .await
