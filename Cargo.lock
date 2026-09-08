@@ -8,6 +8,7 @@ version = "0.0.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
+ "base64",
  "clap",
  "grep",
  "ignore",
