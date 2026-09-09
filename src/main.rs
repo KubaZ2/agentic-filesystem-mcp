@@ -29,6 +29,10 @@ struct Args {
     // Whether to use absolute paths instead of relative paths
     #[arg(long, default_value_t = false)]
     absolute_paths: bool,
+
+    // Whether to follow symlinks outside of the root paths
+    #[arg(long, default_value_t = false)]
+    follow_external_symlinks: bool,
 }
 
 #[tokio::main]
@@ -62,7 +66,7 @@ async fn main() -> Result<()> {
             .map_or("None".to_string(), |p| p.display().to_string())
     ));
 
-    let filesystem = Filesystem::new(root, paths);
+    let filesystem = Filesystem::new(root, paths, args.follow_external_symlinks);
 
     let service = filesystem.serve((stdin(), stdout())).await?;
 
@@ -114,6 +118,7 @@ struct Filesystem {
     root: Option<PathBuf>,
     paths: Vec<PathBuf>,
     media_mime_types: HashMap<&'static str, MimeType>,
+    follow_external_symlinks: bool,
 }
 
 #[derive(Clone)]
@@ -131,7 +136,7 @@ impl ServerHandler for Filesystem {}
 impl Filesystem {
     const DEFAULT_LIMIT: usize = 100;
 
-    fn new(root: Option<PathBuf>, paths: Vec<PathBuf>) -> Self {
+    fn new(root: Option<PathBuf>, paths: Vec<PathBuf>, follow_external_symlinks: bool) -> Self {
         let media_mime_types = HashMap::from([
             ("png", MimeType::Image("image/png")),
             ("jpg", MimeType::Image("image/jpeg")),
@@ -158,10 +163,11 @@ impl Filesystem {
             + Self::tool_router_remove();
 
         Self {
+            tool_router,
             root,
             paths,
             media_mime_types,
-            tool_router,
+            follow_external_symlinks,
         }
     }
 
@@ -175,7 +181,11 @@ impl Filesystem {
         }
     }
 
-    fn safe_join(root: &Option<PathBuf>, rel_path: &Path) -> Option<PathBuf> {
+    fn safe_join(
+        root: &Option<PathBuf>,
+        rel_path: &Path,
+        follow_external_symlinks: bool,
+    ) -> Option<PathBuf> {
         let mut result = root.clone().unwrap_or_default();
 
         for cmp in rel_path.components() {
@@ -197,13 +207,19 @@ impl Filesystem {
                 }
                 _ => return None,
             }
+
+            if !follow_external_symlinks && let Ok(canonicalized) = result.canonicalize() {
+                result = canonicalized;
+            }
         }
 
         Some(result)
     }
 
     fn get_abs_path(&self, path: &str) -> Result<PathBuf> {
-        if let Some(abs_path) = Self::safe_join(&self.root, Path::new(path)) {
+        if let Some(abs_path) =
+            Self::safe_join(&self.root, Path::new(path), self.follow_external_symlinks)
+        {
             for allowed_path in &self.paths {
                 if abs_path.starts_with(allowed_path) {
                     return Ok(abs_path);
