@@ -20,24 +20,26 @@ struct ReadParams {
     path: String,
 
     #[schemars(
-        description = "The maximum number of lines to read. Useful for preventing token overflow when reading very large files.\n\nDefaults to `100` if not specified."
+        description = "The maximum number of lines to read. Useful for preventing token overflow when reading very large text files. Ignored for media files.\n\nDefaults to `100` if not specified."
     )]
     limit: Option<usize>,
 
     #[schemars(
-        description = "The number of lines to skip before starting to read. Used in combination with limit to paginate through large files.\n\nDefaults to `0` if not specified."
+        description = "The number of lines to skip before starting to read. Used in combination with limit to paginate through large files. Ignored for media files.\n\nDefaults to `0` if not specified."
     )]
     offset: Option<usize>,
 
     #[schemars(
-        description = "Whether to prepend 1-indexed line numbers to each line (e.g., `1:`, `2:`). Setting this to `false` can save tokens when line numbers are strictly not needed.\n\nDefaults to `true` if not specified."
+        description = "Whether to prepend 1-indexed line numbers to each line (e.g., `1:`, `2:`). Setting this to `false` can save tokens when line numbers are strictly not needed. Ignored for media files.\n\nDefaults to `true` if not specified."
     )]
     show_line_numbers: Option<bool>,
 }
 
 #[tool_router(router = tool_router_read, vis = "pub")]
 impl Filesystem {
-    #[tool(description = "Reads the contents of a file.")]
+    #[tool(
+        description = "Reads the contents of a file. Supports text files and media files (images and audio)."
+    )]
     async fn read(&self, parameters: Parameters<ReadParams>) -> CallToolResult {
         match self.try_read(parameters).await {
             Ok(result) => result,
