@@ -27,9 +27,25 @@ fn copy_recursive_unknown(
     if file_type.is_symlink() {
         let symlink_target_path = ancestor_src_dir.read_link_contents(src_path)?;
 
-        ancestor_dst_dir.symlink(symlink_target_path, dst_path)?;
+        #[cfg(not(windows))]
+        {
+            ancestor_dst_dir.symlink_contents(symlink_target_path, dst_path)?;
+        }
+
+        #[cfg(windows)]
+        {
+            // TODO: cap std doesn't seem to support absolute symlinks on Windows
+
+            use cap_std::fs::FileTypeExt;
+
+            if file_type.is_symlink_dir() {
+                ancestor_dst_dir.symlink_dir(symlink_target_path, dst_path)?;
+            } else if file_type.is_symlink_file() {
+                ancestor_dst_dir.symlink_file(symlink_target_path, dst_path)?;
+            }
+        }
     } else if file_type.is_file() {
-        ancestor_src_dir.copy(src_path, &ancestor_dst_dir, dst_path)?;
+        ancestor_src_dir.copy(src_path, ancestor_dst_dir, dst_path)?;
     } else if file_type.is_dir() {
         let current_src_dir = ancestor_src_dir.open_dir(src_path)?;
 
