@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
                 .canonicalize()
                 .with_context(|| format!("Error resolving absolute path for {}", p.display()))
         })
-        .collect::<Result<Vec<PathBuf>, _>>()?;
+        .collect::<Result<Vec<PathBuf>>>()?;
 
     let root_path = if args.absolute_paths {
         None
@@ -73,27 +73,22 @@ async fn main() -> Result<()> {
     let mut dirs = abs_paths
         .iter()
         .map(|abs_path| {
-            let path = match root_path {
-                Some(ref root_path) => abs_path.strip_prefix(root_path)?,
-                None => abs_path,
-            };
             let dir = Dir::open_ambient_dir(abs_path, ambient_authority())
                 .with_context(|| format!("Error opening directory {}", abs_path.display()))?;
 
-            Ok(DirInfo {
-                path: path.to_path_buf(),
-                dir,
-            })
-        })
-        .collect::<Result<Vec<DirInfo>, anyhow::Error>>()?;
+            let path = match root_path {
+                Some(ref root_path) => abs_path.strip_prefix(root_path)?,
+                None => abs_path,
+            }
+            .to_path_buf();
 
-    dirs.sort_unstable_by(|info_left, info_right| {
-        info_right
-            .path
-            .as_os_str()
-            .len()
-            .cmp(&info_left.path.as_os_str().len())
-    });
+            Ok((path.components().count(), DirInfo { path, dir }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    dirs.sort_unstable_by(|(count_left, _), (count_right, _)| count_right.cmp(count_left));
+
+    let dirs = dirs.into_iter().map(|(_, dir)| dir).collect::<Vec<_>>();
 
     log_info(&format!(
         "Root path: {}",
