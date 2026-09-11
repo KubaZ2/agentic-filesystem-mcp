@@ -36,11 +36,25 @@ fn copy_recursive_unknown(
         {
             // TODO: cap std doesn't seem to support absolute symlinks on Windows
 
-            use cap_std::fs::FileTypeExt;
+            // TODO: the code below should work for relative symlinks, but cap_std::fs::FileTypeExt
+            // requires an unstable feature flag, so we will follow the symlink to check the type
+            //
+            // use cap_std::fs::FileTypeExt;
+            //
+            // if file_type.is_symlink_dir() {
+            //     ancestor_dst_dir.symlink_dir(symlink_target_path, dst_path)?;
+            // } else if file_type.is_symlink_file() {
+            //     ancestor_dst_dir.symlink_file(symlink_target_path, dst_path)?;
+            // }
 
-            if file_type.is_symlink_dir() {
+            let is_dir = ancestor_src_dir
+                .metadata(src_path)
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
+
+            if is_dir {
                 ancestor_dst_dir.symlink_dir(symlink_target_path, dst_path)?;
-            } else if file_type.is_symlink_file() {
+            } else {
                 ancestor_dst_dir.symlink_file(symlink_target_path, dst_path)?;
             }
         }
