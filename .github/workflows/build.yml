@@ -71,6 +71,12 @@ jobs:
         if: ${{ matrix.use-nix }}
         run: 'true'
 
+      - name: Set Windows-specific environment variables
+        if: runner.os == 'Windows'
+        run: |
+          echo "RUSTFLAGS=--cfg windows_file_type_ext" >> $env:GITHUB_ENV
+          echo "RUSTC_BOOTSTRAP=1" >> $env:GITHUB_ENV
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --verbose
 
