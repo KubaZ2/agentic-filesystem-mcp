@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BinaryHeap, path::PathBuf, time::SystemTime};
+use std::{cmp::Reverse, collections::BinaryHeap, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use grep::{
@@ -6,16 +6,17 @@ use grep::{
     regex::RegexMatcherBuilder,
     searcher::{BinaryDetection, SearcherBuilder},
 };
-use ignore::WalkState;
+use ignore::overrides::OverrideBuilder;
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    schemars, tool, tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, GrepPrinter};
+use crate::{
+    Filesystem, FilesystemData, GrepPrinter,
+    cap_ignore_walker::{CapIgnoreWalker, RunEntry},
+};
 
-#[derive(serde::Deserialize, schemars::JsonSchema, Clone)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 #[schemars(inline)]
 #[schemars(extend("type" = "string"))]
@@ -82,18 +83,12 @@ struct GrepParams {
 impl Filesystem {
     #[tool(description = "Searches file contents using regular expressions.")]
     async fn grep(&self, parameters: Parameters<GrepParams>) -> CallToolResult {
-        match self.try_grep(parameters).await {
-            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
-            Err(err) => {
-                Self::log_tool_error("grep", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+        let data = self.data.clone();
+        Self::run_simple("grep", move || Self::try_grep(data, parameters)).await
     }
 
-    async fn try_grep(
-        &self,
+    fn try_grep(
+        data: Arc<FilesystemData>,
         Parameters(GrepParams {
             pattern,
             path,
@@ -107,15 +102,28 @@ impl Filesystem {
             show_line_numbers,
         }): Parameters<GrepParams>,
     ) -> Result<String> {
-        let abs_path = self.get_maybe_abs_path(path)?;
+        let dirs = data.get_search_dirs(&path)?;
 
-        let mut walker_builder = self.create_walk_builder(&abs_path);
+        let mut overrides = Vec::new();
 
         if let Some(glob) = glob {
-            self.walk_builder_add_glob(&mut walker_builder, &glob, &abs_path)?;
+            let mut override_builder = OverrideBuilder::new(
+                path.as_ref()
+                    .map_or_else(|| Path::new("."), |p| Path::new(p)),
+            );
+
+            override_builder
+                .add(&glob)
+                .context("Invalid glob pattern")?;
+
+            let r#override = override_builder
+                .build()
+                .context("Failed to build glob override")?;
+
+            overrides.push(r#override);
         }
 
-        let walk = walker_builder.build_parallel();
+        let walk = CapIgnoreWalker::new(overrides, dirs);
 
         let mut matcher_builder = RegexMatcherBuilder::new();
 
@@ -143,124 +151,106 @@ impl Filesystem {
             searcher_builder.multi_line(true);
         }
 
-        let searcher = searcher_builder.build();
-
-        let (sender, mut receiver) =
-            tokio::sync::mpsc::channel::<(SystemTime, PathBuf, String)>(1000);
-
-        let root = self.root.clone();
-
-        let walk_task = tokio::task::spawn_blocking(move || {
-            walk.run(|| {
-                let matcher = matcher.clone();
-                let mut searcher = searcher.clone();
-                let sender = sender.clone();
-                let output_mode = output_mode.clone();
-                let root = root.clone();
-
-                Box::new(move |result| {
-                    let result = match result {
-                        Ok(result) => result,
-                        Err(err) => {
-                            Self::log_tool_warning("grep", &anyhow::Error::new(err));
-                            return WalkState::Continue;
-                        }
-                    };
-
-                    if !result.file_type().map_or(false, |ft| ft.is_file()) {
-                        return WalkState::Continue;
-                    }
-
-                    let path = result.path();
-
-                    let safe_path = match Self::safe_path(path, &root) {
-                        Ok(safe_path) => safe_path,
-                        Err(err) => {
-                            Self::log_tool_warning("grep", &anyhow::Error::new(err));
-                            return WalkState::Continue;
-                        }
-                    };
-
-                    let mut data = Vec::new();
-
-                    let mut printer = match output_mode.as_ref().unwrap_or(&GrepOutputMode::Content)
-                    {
-                        GrepOutputMode::Content => {
-                            GrepPrinter::Standard(StandardBuilder::new().build_no_color(&mut data))
-                        }
-                        GrepOutputMode::FilesWithMatches => GrepPrinter::Summary(
-                            SummaryBuilder::new()
-                                .kind(grep::printer::SummaryKind::PathWithMatch)
-                                .build_no_color(&mut data),
-                        ),
-                        GrepOutputMode::Count => GrepPrinter::Summary(
-                            SummaryBuilder::new()
-                                .kind(grep::printer::SummaryKind::Count)
-                                .build_no_color(&mut data),
-                        ),
-                    };
-
-                    if let Err(err) = match printer {
-                        GrepPrinter::Standard(ref mut p) => searcher.search_path(
-                            &matcher,
-                            path,
-                            p.sink_with_path(&matcher, safe_path),
-                        ),
-                        GrepPrinter::Summary(ref mut p) => searcher.search_path(
-                            &matcher,
-                            path,
-                            p.sink_with_path(&matcher, safe_path),
-                        ),
-                    } {
-                        Self::log_tool_warning("grep", &anyhow::Error::new(err));
-                        return WalkState::Continue;
-                    }
-
-                    if data.is_empty() {
-                        return WalkState::Continue;
-                    }
-
-                    let modified_time = match Self::get_modified_time(&result) {
-                        Ok(modified_time) => modified_time,
-                        Err(err) => {
-                            Self::log_tool_warning("grep", &err);
-                            return WalkState::Continue;
-                        }
-                    };
-
-                    let output = String::from_utf8_lossy(&data).into_owned();
-
-                    if let Err(err) =
-                        sender.blocking_send((modified_time, safe_path.to_path_buf(), output))
-                    {
-                        Self::log_tool_warning("grep", &anyhow::Error::new(err));
-                        return WalkState::Quit;
-                    }
-
-                    WalkState::Continue
-                })
-            })
-        });
-
-        let mut results = BinaryHeap::new();
-        let mut total_results: usize = 0;
+        let mut searcher = searcher_builder.build();
 
         let offset = offset.unwrap_or(0);
-
         let limit = limit.unwrap_or(Self::DEFAULT_LIMIT);
 
         let results_limit = offset + limit;
 
-        while let Some(result) = receiver.recv().await {
+        let mut total_results: usize = 0;
+
+        let mut results = BinaryHeap::new();
+
+        walk.run(|entry| {
+            let (entry, entry_path) = match entry {
+                RunEntry::Match(entry, path) => (entry, path),
+                RunEntry::Error(err) => {
+                    Self::log_tool_warning("grep", &err);
+                    return Ok(());
+                }
+            };
+
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    Self::log_tool_warning("grep", &anyhow::Error::from(err));
+                    return Ok(());
+                }
+            };
+
+            if !metadata.is_file() {
+                return Ok(());
+            }
+
+            let mut data = Vec::new();
+
+            let mut printer = match output_mode.unwrap_or(GrepOutputMode::Content) {
+                GrepOutputMode::Content => {
+                    GrepPrinter::Standard(StandardBuilder::new().build_no_color(&mut data))
+                }
+                GrepOutputMode::FilesWithMatches => GrepPrinter::Summary(
+                    SummaryBuilder::new()
+                        .kind(grep::printer::SummaryKind::PathWithMatch)
+                        .build_no_color(&mut data),
+                ),
+                GrepOutputMode::Count => GrepPrinter::Summary(
+                    SummaryBuilder::new()
+                        .kind(grep::printer::SummaryKind::Count)
+                        .build_no_color(&mut data),
+                ),
+            };
+
+            let file = match entry.open() {
+                Ok(file) => file,
+                Err(err) => {
+                    Self::log_tool_warning("grep", &anyhow::Error::from(err));
+                    return Ok(());
+                }
+            }
+            .into_std();
+
+            let display_path = match path {
+                Some(ref p) => entry_path.strip_prefix(p)?,
+                None => entry_path,
+            };
+
+            if let Err(err) = match printer {
+                GrepPrinter::Standard(ref mut p) => {
+                    searcher.search_file(&matcher, &file, p.sink_with_path(&matcher, display_path))
+                }
+                GrepPrinter::Summary(ref mut p) => {
+                    searcher.search_file(&matcher, &file, p.sink_with_path(&matcher, display_path))
+                }
+            } {
+                Self::log_tool_warning("grep", &anyhow::Error::new(err));
+                return Ok(());
+            }
+
+            if data.is_empty() {
+                return Ok(());
+            }
+
+            let modified_time = match metadata.modified() {
+                Ok(time) => time,
+                Err(err) => {
+                    Self::log_tool_warning("grep", &anyhow::Error::from(err));
+                    return Ok(());
+                }
+            };
+
+            let output = String::from_utf8_lossy(&data).into_owned();
+
             total_results += 1;
-            results.push(Reverse(result));
+
+            results.push(Reverse((modified_time, display_path.to_path_buf(), output)));
 
             if results.len() > results_limit {
                 results.pop();
             }
-        }
 
-        walk_task.await.context("Searching files failed")?;
+            Ok(())
+        })?;
 
         if total_results == 0 {
             return Ok("No results found regardless of the specified offset".to_string());

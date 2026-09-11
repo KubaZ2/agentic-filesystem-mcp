@@ -1,15 +1,13 @@
-use std::io::Write;
+use std::{io::Write, sync::Arc};
 
 use aho_corasick::AhoCorasick;
 use anyhow::{Context, Result};
+use cap_tempfile::TempFile;
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    schemars, tool, tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
-use tempfile::NamedTempFile;
 
-use crate::Filesystem;
+use crate::{Filesystem, FilesystemData};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EditParams {
@@ -37,19 +35,13 @@ impl Filesystem {
     #[tool(
         description = "Performs exact string replacement in a file. Useful for making partial changes to an existing file."
     )]
-    fn edit(&self, parameters: Parameters<EditParams>) -> CallToolResult {
-        match self.try_edit(parameters) {
-            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
-            Err(err) => {
-                Self::log_tool_error("edit", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+    async fn edit(&self, parameters: Parameters<EditParams>) -> CallToolResult {
+        let data = self.data.clone();
+        Self::run_simple("edit", move || Self::try_edit(data, parameters)).await
     }
 
     fn try_edit(
-        &self,
+        data: Arc<FilesystemData>,
         Parameters(EditParams {
             path,
             old_string,
@@ -57,9 +49,9 @@ impl Filesystem {
             replace_all,
         }): Parameters<EditParams>,
     ) -> Result<String> {
-        let abs_path = self.get_abs_path(&path)?;
+        let (dir, rel_path) = data.get_dir(&path)?;
 
-        let mut file = std::fs::File::open(&abs_path)?;
+        let mut file = dir.dir.open(&rel_path)?;
 
         let file_permissions = file
             .metadata()
@@ -69,7 +61,7 @@ impl Filesystem {
         let ac =
             AhoCorasick::new([&old_string]).context("Failed to create Aho-Corasick automaton")?;
 
-        let tempfile = NamedTempFile::new().context("Failed to create a temporary file")?;
+        let tempfile = TempFile::new(&dir.dir).context("Failed to create a temporary file")?;
 
         let mut writer = std::io::BufWriter::new(tempfile);
 
@@ -102,6 +94,7 @@ impl Filesystem {
 
         let tempfile = writer
             .into_inner()
+            .map_err(|e| e.into_error())
             .context("Failed to flush the temporary file")?;
 
         tempfile
@@ -109,8 +102,10 @@ impl Filesystem {
             .set_permissions(file_permissions)
             .context("Failed to set permissions on the temporary file")?;
 
+        drop(file);
+
         tempfile
-            .persist(&abs_path)
+            .replace(&rel_path)
             .context("Failed to replace the original file with the edited file")?;
 
         Ok(format!(

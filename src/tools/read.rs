@@ -1,18 +1,19 @@
-use std::io::Write;
+use std::{
+    io::{BufRead, BufReader},
+    path::Path,
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
+use cap_std::fs::File;
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},
     schemars, tool, tool_router,
 };
 use std::fmt::Write as _;
-use tokio::{
-    fs::File,
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
-};
 
-use crate::{Filesystem, MimeType};
+use crate::{Filesystem, FilesystemData, MimeType};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ReadParams {
@@ -41,56 +42,37 @@ impl Filesystem {
         description = "Reads the contents of a file. Supports text files and media files (images and audio)."
     )]
     async fn read(&self, parameters: Parameters<ReadParams>) -> CallToolResult {
-        match self.try_read(parameters).await {
-            Ok(result) => result,
-            Err(err) => {
-                Self::log_tool_error("read", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+        let data = self.data.clone();
+        Self::run("read", move || Self::try_read(data, parameters)).await
     }
 
-    async fn try_read(&self, parameters: Parameters<ReadParams>) -> Result<CallToolResult> {
-        let abs_path = self.get_abs_path(&parameters.0.path)?;
+    fn try_read(
+        data: Arc<FilesystemData>,
+        parameters: Parameters<ReadParams>,
+    ) -> Result<CallToolResult> {
+        let path = &parameters.0.path;
+        let (dir, rel_path) = data.get_dir(&path)?;
 
-        let file = File::open(&abs_path)
-            .await
-            .context("Failed to open the file")?;
+        let file = dir.dir.open(&rel_path)?;
 
-        if let Some(extension) = abs_path.extension()
+        if let Some(extension) = Path::new(path).extension()
             && let Some(extension) = extension.to_str()
             && let Some(media_mime_type) =
-                self.media_mime_types.get(extension.to_lowercase().as_str())
+                data.media_mime_types.get(extension.to_lowercase().as_str())
         {
-            return self.try_read_media(media_mime_type, file).await;
+            return Self::try_read_media(media_mime_type, file);
         }
 
-        self.try_read_text(file, parameters).await
+        Self::try_read_text(file, parameters)
     }
 
-    async fn try_read_media(&self, mime_type: &MimeType, mut file: File) -> Result<CallToolResult> {
+    fn try_read_media(mime_type: &MimeType, mut file: File) -> Result<CallToolResult> {
         let data = Vec::new();
 
         let mut encoder =
             base64::write::EncoderWriter::new(data, &base64::engine::general_purpose::STANDARD);
 
-        let mut buf = [0u8; 8192];
-
-        loop {
-            let bytes_read = file
-                .read(&mut buf)
-                .await
-                .context("Failed to read the media file")?;
-
-            if bytes_read == 0 {
-                break;
-            }
-
-            encoder
-                .write_all(&buf[..bytes_read])
-                .context("Failed to encode the media file")?;
-        }
+        std::io::copy(&mut file, &mut encoder).context("Failed to encode the media file")?;
 
         let data = encoder
             .finish()
@@ -104,8 +86,7 @@ impl Filesystem {
         }]))
     }
 
-    async fn try_read_text(
-        &self,
+    fn try_read_text(
         file: File,
         Parameters(ReadParams {
             path: _,
@@ -130,7 +111,6 @@ impl Filesystem {
         loop {
             let bytes_read = reader
                 .read_until(b'\n', &mut raw_line)
-                .await
                 .context("Failed to read the file")?;
 
             if bytes_read == 0 {

@@ -1,12 +1,11 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
-use parcopy::CopyBuilder;
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    schemars, tool, tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::Filesystem;
+use crate::{Filesystem, FilesystemData, copy_recursive::copy_recursive};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct CopyParams {
@@ -30,39 +29,30 @@ impl Filesystem {
         description = "Copies a file or directory to a new location.\n\nIMPORTANT: This operation fails if the destination path already exists."
     )]
     async fn copy(&self, parameters: Parameters<CopyParams>) -> CallToolResult {
-        match self.try_copy(parameters).await {
-            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
-            Err(err) => {
-                Self::log_tool_error("copy", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+        let data = self.data.clone();
+        Self::run_simple("copy", move || Self::try_copy(data, parameters)).await
     }
 
-    async fn try_copy(
-        &self,
+    fn try_copy(
+        data: Arc<FilesystemData>,
         Parameters(CopyParams {
             src_path,
             dst_path,
             recursive,
         }): Parameters<CopyParams>,
     ) -> Result<String> {
-        let abs_src_path = self.get_abs_path(&src_path)?;
-        let abs_dst_path = self.get_abs_path(&dst_path)?;
+        let (src_dir, rel_src_path) = data.get_dir(&src_path)?;
+        let (dst_dir, rel_dst_path) = data.get_dir(&dst_path)?;
 
-        let builder = CopyBuilder::new(&abs_src_path, &abs_dst_path).error_on_conflict();
-
-        if recursive.unwrap_or(false) && abs_src_path.is_dir() {
-            builder
-                .run_dir()
-                .context("Failed to copy the directory recursively")?;
-
-            Ok("Successfully copied the directory recursively".to_string())
+        if recursive.unwrap_or(false) {
+            copy_recursive(&src_dir.dir, rel_src_path, &dst_dir.dir, rel_dst_path)?;
         } else {
-            builder.run_file().context("Failed to copy the file")?;
-
-            Ok("Successfully copied the file".to_string())
+            src_dir
+                .dir
+                .copy(rel_src_path, &dst_dir.dir, rel_dst_path)
+                .context("Failed to copy the file")?;
         }
+
+        Ok("Successfully copied the file or directory".to_string())
     }
 }

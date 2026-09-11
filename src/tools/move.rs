@@ -1,11 +1,11 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    schemars, tool, tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::Filesystem;
+use crate::{Filesystem, FilesystemData};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct MoveParams {
@@ -25,25 +25,20 @@ impl Filesystem {
         description = "Moves or renames a file or directory.\n\nIMPORTANT: This operation fails if the destination path already exists."
     )]
     async fn r#move(&self, parameters: Parameters<MoveParams>) -> CallToolResult {
-        match self.try_move(parameters).await {
-            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
-            Err(err) => {
-                Self::log_tool_error("move", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+        let data = self.data.clone();
+        Self::run_simple("move", move || Self::try_move(data, parameters)).await
     }
 
-    async fn try_move(
-        &self,
+    fn try_move(
+        data: Arc<FilesystemData>,
         Parameters(MoveParams { src_path, dst_path }): Parameters<MoveParams>,
     ) -> Result<String> {
-        let abs_src_path = self.get_abs_path(&src_path)?;
-        let abs_dst_path = self.get_abs_path(&dst_path)?;
+        let (src_dir, rel_src_path) = data.get_dir(&src_path)?;
+        let (dst_dir, rel_dst_path) = data.get_dir(&dst_path)?;
 
-        tokio::fs::rename(&abs_src_path, &abs_dst_path)
-            .await
+        src_dir
+            .dir
+            .rename(rel_src_path, &dst_dir.dir, rel_dst_path)
             .context("Failed to move the file or directory")?;
 
         Ok("Successfully moved the file or directory".to_string())

@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    schemars, tool, tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
 use crate::Filesystem;
@@ -22,30 +20,24 @@ impl Filesystem {
         description = "Writes a file, automatically creating any missing parent directories. Completely overwrites the file if one already exists.\n\nIMPORTANT: Because it overwrites entirely, ensure you have the complete file context before modifying existing files. For partial changes to existing files, prefer using the `edit` tool."
     )]
     async fn write(&self, parameters: Parameters<WriteParams>) -> CallToolResult {
-        match self.try_write(parameters).await {
-            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
-            Err(err) => {
-                Self::log_tool_error("write", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+        let data = self.data.clone();
+        Self::run_simple("write", move || Self::try_write(data, parameters)).await
     }
 
-    async fn try_write(
-        &self,
+    fn try_write(
+        data: std::sync::Arc<crate::FilesystemData>,
         Parameters(WriteParams { path, content }): Parameters<WriteParams>,
     ) -> Result<String> {
-        let abs_path = self.get_abs_path(&path)?;
+        let (dir, rel_path) = data.get_dir(&path)?;
 
-        if let Some(parent) = abs_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
+        if let Some(parent) = rel_path.parent() {
+            dir.dir
+                .create_dir_all(parent)
                 .context("Failed to create parent directories for the file")?;
         }
 
-        tokio::fs::write(&abs_path, content)
-            .await
+        dir.dir
+            .write(rel_path, content)
             .context("Failed to write to the file")?;
 
         Ok("Successfully wrote the file".to_string())

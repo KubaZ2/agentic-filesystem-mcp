@@ -1,11 +1,11 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    schemars, tool, tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::Filesystem;
+use crate::{Filesystem, FilesystemData};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct RemoveParams {
@@ -24,45 +24,43 @@ impl Filesystem {
         description = "Removes a file or directory.\n\nIMPORTANT: This action is permanent. Always verify the path before calling."
     )]
     async fn remove(&self, parameters: Parameters<RemoveParams>) -> CallToolResult {
-        match self.try_remove(parameters).await {
-            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
-            Err(err) => {
-                Self::log_tool_error("remove", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+        let data = self.data.clone();
+        Self::run_simple("remove", move || Self::try_remove(data, parameters)).await
     }
 
-    async fn try_remove(
-        &self,
+    fn try_remove(
+        data: Arc<FilesystemData>,
         Parameters(RemoveParams { path, recursive }): Parameters<RemoveParams>,
     ) -> Result<String> {
-        let abs_src_path = self.get_abs_path(&path)?;
+        let (dir, rel_path) = data.get_dir(&path)?;
 
-        let metadata = tokio::fs::metadata(&abs_src_path)
-            .await
-            .context("Failed to get metadata for the file or directory")?;
+        let metadata = dir
+            .dir
+            .symlink_metadata(&rel_path)
+            .context("Failed to retrieve metadata for the specified path")?;
 
-        if metadata.is_dir() {
+        if metadata.is_file() || metadata.is_symlink() {
+            dir.dir
+                .remove_file(&rel_path)
+                .context("Failed to remove the file")?;
+
+            Ok("Successfully removed the file".to_string())
+        } else if metadata.is_dir() {
             let recursive = recursive.unwrap_or(false);
 
             if recursive {
-                tokio::fs::remove_dir_all(&abs_src_path)
-                    .await
+                dir.dir
+                    .remove_dir_all(&rel_path)
                     .context("Failed to remove the directory recursively")?;
             } else {
-                tokio::fs::remove_dir(&abs_src_path).await
+                dir.dir
+                    .remove_dir(&rel_path)
                     .context("Failed to remove the directory (consider using recursive option for non-empty directories)")?;
             }
 
             Ok("Successfully removed the directory".to_string())
         } else {
-            tokio::fs::remove_file(&abs_src_path)
-                .await
-                .context("Failed to remove the file")?;
-
-            Ok("Successfully removed the file".to_string())
+            Ok("The specified path is neither a file nor a directory".to_string())
         }
     }
 }

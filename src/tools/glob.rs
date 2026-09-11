@@ -1,14 +1,15 @@
-use std::{cmp::Reverse, collections::BinaryHeap, time::SystemTime};
+use std::{cmp::Reverse, collections::BinaryHeap, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
-use ignore::WalkState;
+use ignore::overrides::OverrideBuilder;
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    schemars, tool, tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::Filesystem;
+use crate::{
+    Filesystem, FilesystemData,
+    cap_ignore_walker::{CapIgnoreWalker, RunEntry},
+};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct GlobParams {
@@ -39,18 +40,12 @@ impl Filesystem {
         description = "Searches for files or directories matching a glob pattern and returns them sorted by modification time."
     )]
     async fn glob(&self, parameters: Parameters<GlobParams>) -> CallToolResult {
-        match self.try_glob(parameters).await {
-            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
-            Err(err) => {
-                Self::log_tool_error("glob", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+        let data = self.data.clone();
+        Self::run_simple("glob", move || Self::try_glob(data, parameters)).await
     }
 
-    async fn try_glob(
-        &self,
+    fn try_glob(
+        data: Arc<FilesystemData>,
         Parameters(GlobParams {
             pattern,
             path,
@@ -58,84 +53,64 @@ impl Filesystem {
             offset,
         }): Parameters<GlobParams>,
     ) -> Result<String> {
-        let abs_path = self.get_maybe_abs_path(path)?;
+        let dirs = data.get_search_dirs(&path)?;
 
-        let mut walk_builder = self.create_walk_builder(&abs_path);
+        let mut override_builder = OverrideBuilder::new(
+            path.as_ref()
+                .map_or_else(|| Path::new("."), |p| Path::new(p)),
+        );
 
-        let glob = self.walk_builder_add_glob(&mut walk_builder, &pattern, &abs_path)?;
+        override_builder
+            .add(&pattern)
+            .context("Invalid glob pattern")?;
 
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<(SystemTime, String)>(1000);
+        let r#override = override_builder
+            .build()
+            .context("Failed to build glob override")?;
 
-        let walk = walk_builder.build_parallel();
-
-        let root = self.root.clone();
-
-        let walk_task = tokio::task::spawn_blocking(move || {
-            walk.run(|| {
-                let sender = sender.clone();
-                let root = root.clone();
-                let glob = glob.clone();
-
-                Box::new(move |result| {
-                    let result = match result {
-                        Ok(result) => result,
-                        Err(err) => {
-                            Self::log_tool_warning("glob", &anyhow::Error::new(err));
-                            return WalkState::Continue;
-                        }
-                    };
-
-                    if result.file_type().map_or(false, |ft| ft.is_dir())
-                        && !glob.matched(result.path(), true).is_whitelist()
-                    {
-                        return WalkState::Continue;
-                    }
-
-                    let safe_path = match Self::safe_path(result.path(), &root) {
-                        Ok(safe_path) => safe_path.display().to_string(),
-                        Err(err) => {
-                            Self::log_tool_warning("glob", &anyhow::Error::new(err));
-                            return WalkState::Continue;
-                        }
-                    };
-
-                    let modified_time = match Self::get_modified_time(&result) {
-                        Ok(modified_time) => modified_time,
-                        Err(err) => {
-                            Self::log_tool_warning("glob", &err);
-                            return WalkState::Continue;
-                        }
-                    };
-
-                    if let Err(err) = sender.blocking_send((modified_time, safe_path)) {
-                        Self::log_tool_warning("glob", &anyhow::Error::new(err));
-                        return WalkState::Quit;
-                    }
-
-                    WalkState::Continue
-                })
-            })
-        });
-
-        let mut results = BinaryHeap::new();
-        let mut total_results: usize = 0;
+        let walk = CapIgnoreWalker::new(vec![r#override], dirs);
 
         let offset = offset.unwrap_or(0);
-
         let limit = limit.unwrap_or(Self::DEFAULT_LIMIT);
 
         let results_limit = offset + limit;
 
-        while let Some(result) = receiver.recv().await {
+        let mut total_results: usize = 0;
+
+        let mut results = BinaryHeap::new();
+
+        walk.run(|entry| {
+            let (entry, entry_path) = match entry {
+                RunEntry::Match(entry, path) => (entry, path),
+                RunEntry::Error(err) => {
+                    Self::log_tool_warning("glob", &err);
+                    return Ok(());
+                }
+            };
+
+            let modified_time = match entry.metadata().and_then(|metadata| metadata.modified()) {
+                Ok(time) => time,
+                Err(err) => {
+                    Self::log_tool_warning("glob", &anyhow::Error::from(err));
+                    return Ok(());
+                }
+            };
+
+            let display_path = match path {
+                Some(ref p) => entry_path.strip_prefix(p)?.display().to_string(),
+                None => entry_path.display().to_string(),
+            };
+
             total_results += 1;
-            results.push(Reverse(result));
+
+            results.push(Reverse((modified_time, display_path)));
 
             if results.len() > results_limit {
                 results.pop();
             }
-        }
 
-        walk_task.await.context("Searching files failed")?;
+            Ok(())
+        })?;
 
         if total_results == 0 {
             return Ok("No results found regardless of the specified offset".to_string());
@@ -155,10 +130,8 @@ impl Filesystem {
             result_count, total_results
         );
 
-        let page = &results.into_sorted_vec()[offset..];
-
-        for Reverse((_, path)) in page {
-            response.push_str(path);
+        for Reverse((_, path)) in &results.into_sorted_vec()[offset..] {
+            response.push_str(&path);
             response.push('\n');
         }
 

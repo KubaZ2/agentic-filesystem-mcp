@@ -2,21 +2,28 @@ use std::{
     collections::HashMap,
     ffi::OsString,
     io::Write,
-    path::{Path, PathBuf, StripPrefixError},
-    time::SystemTime,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
+use cap_std::{ambient_authority, fs::Dir};
 use clap::Parser;
 use grep::printer::{Standard, Summary};
-use ignore::{
-    DirEntry, WalkBuilder,
-    overrides::{Override, OverrideBuilder},
+use rmcp::{
+    ServerHandler, ServiceExt,
+    handler::server::tool::ToolRouter,
+    model::{CallToolResult, ContentBlock},
+    tool_handler,
 };
-use rmcp::{ServerHandler, ServiceExt, handler::server::tool::ToolRouter, tool_handler};
 use termcolor::NoColor;
-use tokio::io::{stdin, stdout};
+use tokio::{
+    io::{stdin, stdout},
+    task::spawn_blocking,
+};
 
+mod cap_ignore_walker;
+mod copy_recursive;
 mod tools;
 
 #[derive(Parser)]
@@ -31,6 +38,13 @@ struct Args {
     absolute_paths: bool,
 }
 
+struct DirInfo {
+    /// Path relative to the root path
+    path: PathBuf,
+
+    dir: Dir,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -41,28 +55,49 @@ async fn main() -> Result<()> {
         bail!("No paths provided");
     }
 
-    let paths = paths
+    let abs_paths = paths
         .iter()
         .map(|p| {
             PathBuf::from(p)
                 .canonicalize()
                 .with_context(|| format!("Error resolving absolute path for {}", p.display()))
         })
-        .collect::<Result<Vec<PathBuf>, _>>()?;
+        .collect::<Result<Vec<PathBuf>>>()?;
 
-    let root = if args.absolute_paths {
+    let root_path = if args.absolute_paths {
         None
     } else {
-        get_root_path(&paths)?
+        get_root_path(&abs_paths)?
     };
+
+    let mut dirs = abs_paths
+        .iter()
+        .map(|abs_path| {
+            let dir = Dir::open_ambient_dir(abs_path, ambient_authority())
+                .with_context(|| format!("Error opening directory {}", abs_path.display()))?;
+
+            let path = match root_path {
+                Some(ref root_path) => abs_path.strip_prefix(root_path)?,
+                None => abs_path,
+            }
+            .to_path_buf();
+
+            Ok((path.components().count(), DirInfo { path, dir }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    dirs.sort_unstable_by(|(count_left, _), (count_right, _)| count_right.cmp(count_left));
+
+    let dirs = dirs.into_iter().map(|(_, dir)| dir).collect::<Vec<_>>();
 
     log_info(&format!(
         "Root path: {}",
-        root.as_ref()
+        root_path
+            .as_ref()
             .map_or("None".to_string(), |p| p.display().to_string())
     ));
 
-    let filesystem = Filesystem::new(root, paths);
+    let filesystem = Filesystem::new(dirs);
 
     let service = filesystem.serve((stdin(), stdout())).await?;
 
@@ -108,12 +143,63 @@ enum MimeType {
     Audio(&'static str),
 }
 
-#[derive(Clone)]
+struct FilesystemData {
+    dirs: Vec<DirInfo>,
+    media_mime_types: HashMap<&'static str, MimeType>,
+}
+
+impl FilesystemData {
+    fn get_dir<'a>(&self, path: &'a impl AsRef<Path>) -> Result<(&DirInfo, &'a Path)> {
+        let path = path.as_ref();
+
+        for dir in &self.dirs {
+            if dir.path == path {
+                return Ok((&dir, Path::new(".")));
+            } else if let Ok(rel_path) = path.strip_prefix(&dir.path) {
+                return Ok((&dir, rel_path));
+            }
+        }
+
+        bail!("Path is not within the allowed paths");
+    }
+
+    fn get_search_dirs<'a>(
+        &self,
+        path: &'a Option<impl AsRef<Path>>,
+    ) -> Result<Vec<(&DirInfo, &'a Path)>> {
+        let path = match path {
+            Some(p) => p.as_ref(),
+            None => return Ok(self.dirs.iter().map(|dir| (dir, Path::new(""))).collect()),
+        };
+
+        let mut search_dirs = Vec::new();
+
+        for dir in &self.dirs {
+            // example:
+            // dir.path: dir_a/dir_b
+            // path: dir_a
+            if dir.path.starts_with(path) {
+                search_dirs.push((dir, Path::new("")));
+
+            // example:
+            // dir.path: dir_a
+            // path: dir_a/dir_b
+            } else if let Ok(rel_path) = path.strip_prefix(&dir.path) {
+                search_dirs.push((dir, rel_path));
+            }
+        }
+
+        if search_dirs.is_empty() {
+            bail!("Path is not within the allowed paths");
+        }
+
+        Ok(search_dirs)
+    }
+}
+
 struct Filesystem {
     tool_router: ToolRouter<Filesystem>,
-    root: Option<PathBuf>,
-    paths: Vec<PathBuf>,
-    media_mime_types: HashMap<&'static str, MimeType>,
+    data: Arc<FilesystemData>,
 }
 
 #[derive(Clone)]
@@ -131,7 +217,7 @@ impl ServerHandler for Filesystem {}
 impl Filesystem {
     const DEFAULT_LIMIT: usize = 100;
 
-    fn new(root: Option<PathBuf>, paths: Vec<PathBuf>) -> Self {
+    fn new(dirs: Vec<DirInfo>) -> Self {
         let media_mime_types = HashMap::from([
             ("png", MimeType::Image("image/png")),
             ("jpg", MimeType::Image("image/jpeg")),
@@ -158,110 +244,53 @@ impl Filesystem {
             + Self::tool_router_remove();
 
         Self {
-            root,
-            paths,
-            media_mime_types,
             tool_router,
+            data: Arc::new(FilesystemData {
+                dirs,
+                media_mime_types,
+            }),
         }
     }
 
-    fn safe_path<'a>(
-        abs_path: &'a Path,
-        root: &Option<PathBuf>,
-    ) -> Result<&'a Path, StripPrefixError> {
-        match root {
-            Some(root) => abs_path.strip_prefix(root),
-            None => Ok(abs_path),
-        }
+    async fn run_simple<F>(tool_name: &str, f: F) -> CallToolResult
+    where
+        F: FnOnce() -> Result<String> + Send + 'static,
+    {
+        spawn_blocking(f).await.map_or_else(
+            |err| {
+                let err = anyhow::Error::new(err);
+                Self::log_tool_error(tool_name, &err);
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
+            },
+            |result| {
+                result.map_or_else(
+                    |err| {
+                        Self::log_tool_error(tool_name, &err);
+                        CallToolResult::error(vec![ContentBlock::text(err.to_string())])
+                    },
+                    |s| CallToolResult::success(vec![ContentBlock::text(s)]),
+                )
+            },
+        )
     }
 
-    fn safe_join(root: &Option<PathBuf>, rel_path: &Path) -> Option<PathBuf> {
-        let mut result = root.clone().unwrap_or_default();
-
-        for cmp in rel_path.components() {
-            match cmp {
-                std::path::Component::Prefix(_) | std::path::Component::RootDir
-                    if root.is_none() =>
-                {
-                    result.push(cmp)
-                }
-                std::path::Component::Normal(_) => result.push(cmp),
-                std::path::Component::CurDir => continue,
-                std::path::Component::ParentDir
-                    if match root {
-                        Some(root) => *root != result,
-                        None => true,
-                    } =>
-                {
-                    result.pop();
-                }
-                _ => return None,
-            }
-        }
-
-        Some(result)
-    }
-
-    fn get_abs_path(&self, path: &str) -> Result<PathBuf> {
-        if let Some(abs_path) = Self::safe_join(&self.root, Path::new(path)) {
-            for allowed_path in &self.paths {
-                if abs_path.starts_with(allowed_path) {
-                    return Ok(abs_path);
-                }
-            }
-        }
-
-        bail!("Path is not within the allowed paths");
-    }
-
-    fn get_modified_time(entry: &DirEntry) -> Result<SystemTime> {
-        let metadata = entry.metadata()?;
-
-        let modified_time = metadata.modified()?;
-
-        Ok(modified_time)
-    }
-
-    fn get_maybe_abs_path(&self, path: Option<String>) -> Result<Option<PathBuf>> {
-        match path {
-            Some(path) => self.get_abs_path(&path).map(Some),
-            None => Ok(None),
-        }
-    }
-
-    fn create_walk_builder(&self, abs_path: &Option<PathBuf>) -> WalkBuilder {
-        let mut walk_builder = WalkBuilder::from_iter(match abs_path {
-            Some(path) => vec![path.clone()],
-            None => self.paths.clone(),
-        });
-
-        walk_builder.standard_filters(true).require_git(false);
-
-        walk_builder
-    }
-
-    fn walk_builder_add_glob(
-        &self,
-        walk_builder: &mut WalkBuilder,
-        pattern: &str,
-        abs_path: &Option<PathBuf>,
-    ) -> Result<Override> {
-        let mut glob_builder = OverrideBuilder::new(match abs_path {
-            Some(abs_path) => abs_path.clone(),
-            None => self.root.as_ref().map_or(PathBuf::new(), |p| p.clone()),
-        });
-
-        glob_builder
-            .add(pattern)
-            .context("Failed to add glob a pattern to an override builder")?;
-
-        let glob = glob_builder
-            .build()
-            .context("Failed to build an override with a glob pattern")?;
-
-        walk_builder.overrides(glob.clone());
-
-        Ok(glob)
+    async fn run<F>(tool_name: &str, f: F) -> CallToolResult
+    where
+        F: FnOnce() -> Result<CallToolResult> + Send + 'static,
+    {
+        spawn_blocking(f)
+            .await
+            .unwrap_or_else(|err| {
+                let err = anyhow::Error::new(err);
+                Self::log_tool_error(tool_name, &err);
+                Ok(CallToolResult::error(vec![ContentBlock::text(
+                    err.to_string(),
+                )]))
+            })
+            .unwrap_or_else(|err| {
+                Self::log_tool_error(tool_name, &err);
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
+            })
     }
 
     fn log_tool_error(tool: &str, err: &anyhow::Error) {
