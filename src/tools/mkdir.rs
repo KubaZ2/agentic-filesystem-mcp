@@ -1,11 +1,11 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    schemars, tool, tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::Filesystem;
+use crate::{Filesystem, FilesystemData};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct MkdirParams {
@@ -24,30 +24,27 @@ impl Filesystem {
         description = "Creates a new directory.\n\nIMPORTANT: The `write` tool automatically creates missing parent directories. You DO NOT need to call `mkdir` prior to writing a new file with the `write` tool."
     )]
     async fn mkdir(&self, parameters: Parameters<MkdirParams>) -> CallToolResult {
-        match self.try_mkdir(parameters).await {
-            Ok(result) => CallToolResult::success(vec![ContentBlock::text(result)]),
-            Err(err) => {
-                Self::log_tool_error("mkdir", &err);
-
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }
-        }
+        let data = self.data.clone();
+        Self::run_simple("mkdir", move || Self::try_mkdir(data, parameters)).await
     }
 
-    async fn try_mkdir(
-        &self,
+    fn try_mkdir(
+        data: Arc<FilesystemData>,
         Parameters(MkdirParams { path, parents }): Parameters<MkdirParams>,
     ) -> Result<String> {
-        let abs_path = self.get_abs_path(&path)?;
+        let (dir, rel_path) = data.get_dir(&path)?;
 
         let parents = parents.unwrap_or(false);
 
         if parents {
-            tokio::fs::create_dir_all(&abs_path).await
+            dir.dir
+                .create_dir_all(&rel_path)
+                .context("Failed to create the directory with parents")?;
         } else {
-            tokio::fs::create_dir(&abs_path).await
+            dir.dir
+                .create_dir(&rel_path)
+                .context("Failed to create the directory")?;
         }
-        .context("Failed to create the directory")?;
 
         Ok("Successfully created the directory".to_string())
     }
