@@ -29,11 +29,11 @@ mod tools;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
-    // The root paths to serve
+    /// The root paths to serve
     #[arg(long, num_args = 1..)]
     root: Vec<OsString>,
 
-    // Whether to use absolute paths instead of relative paths
+    /// Whether to use absolute paths instead of relative paths
     #[arg(long, default_value_t = false)]
     absolute_paths: bool,
 }
