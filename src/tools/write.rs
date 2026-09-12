@@ -61,7 +61,6 @@ mod tests {
         });
 
         let result = Filesystem::try_write(data.clone(), params)?;
-
         assert_eq!(result, "Successfully wrote the file");
 
         let mut file = data.dirs[0].dir.open("test_file.txt")?;
@@ -100,17 +99,17 @@ mod tests {
     fn test_write_overwrites_existing_file() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        let initial_params = Parameters(WriteParams {
-            path: "overwrite_me.txt".to_string(),
-            content: "Initial content".to_string(),
-        });
-        Filesystem::try_write(data.clone(), initial_params)?;
+        data.dirs[0]
+            .dir
+            .write("overwrite_me.txt", "Initial content")?;
 
         let overwrite_params = Parameters(WriteParams {
             path: "overwrite_me.txt".to_string(),
             content: "New content".to_string(),
         });
-        Filesystem::try_write(data.clone(), overwrite_params)?;
+
+        let result = Filesystem::try_write(data.clone(), overwrite_params)?;
+        assert_eq!(result, "Successfully wrote the file");
 
         let mut file = data.dirs[0].dir.open("overwrite_me.txt")?;
 
