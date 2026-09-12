@@ -154,9 +154,9 @@ impl FilesystemData {
 
         for dir in &self.dirs {
             if dir.path == path {
-                return Ok((&dir, Path::new(".")));
+                return Ok((dir, Path::new(".")));
             } else if let Ok(rel_path) = path.strip_prefix(&dir.path) {
-                return Ok((&dir, rel_path));
+                return Ok((dir, rel_path));
             }
         }
 
