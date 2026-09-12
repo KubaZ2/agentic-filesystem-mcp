@@ -46,8 +46,6 @@ impl Filesystem {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
-
     use super::*;
     use crate::tools::test_utils::setup_test_fs;
 
@@ -63,10 +61,8 @@ mod tests {
         let result = Filesystem::try_write(data.clone(), params)?;
         assert_eq!(result, "Successfully wrote the file");
 
-        let mut file = data.dirs[0].dir.open("test_file.txt")?;
+        let content = data.dirs[0].dir.read_to_string("test_file.txt")?;
 
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
         assert_eq!(content, "Hello, world!");
 
         Ok(())
@@ -84,12 +80,10 @@ mod tests {
         let result = Filesystem::try_write(data.clone(), params)?;
         assert_eq!(result, "Successfully wrote the file");
 
-        let mut file = data.dirs[0]
+        let content = data.dirs[0]
             .dir
-            .open("deeply/nested/directory/test_file.txt")?;
+            .read_to_string("deeply/nested/directory/test_file.txt")?;
 
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
         assert_eq!(content, "Hello from the nest!");
 
         Ok(())
@@ -111,10 +105,8 @@ mod tests {
         let result = Filesystem::try_write(data.clone(), overwrite_params)?;
         assert_eq!(result, "Successfully wrote the file");
 
-        let mut file = data.dirs[0].dir.open("overwrite_me.txt")?;
+        let content = data.dirs[0].dir.read_to_string("overwrite_me.txt")?;
 
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
         assert_eq!(content, "New content");
 
         Ok(())
