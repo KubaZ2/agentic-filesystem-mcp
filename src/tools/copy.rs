@@ -169,6 +169,48 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_copy_nested_dirs_with_files_and_empty_dirs_recursive_true() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.create_dir("src_tree")?;
+        data.dirs[0].dir.create_dir("src_tree/a")?;
+        data.dirs[0].dir.create_dir("src_tree/a/b")?;
+        data.dirs[0].dir.create_dir("src_tree/a/c")?;
+
+        data.dirs[0]
+            .dir
+            .write("src_tree/a/file1.txt", "content A")?;
+        data.dirs[0]
+            .dir
+            .write("src_tree/a/b/file2.txt", "content B")?;
+
+        let params = Parameters(CopyParams {
+            src_path: "src_tree".to_string(),
+            dst_path: "dst_tree".to_string(),
+            recursive: Some(true),
+        });
+
+        let result = Filesystem::try_copy(data.clone(), params)?;
+
+        assert_eq!(result, "Successfully copied the file or directory");
+
+        assert!(data.dirs[0].dir.exists("dst_tree"));
+        assert!(data.dirs[0].dir.exists("dst_tree/a"));
+        assert!(data.dirs[0].dir.exists("dst_tree/a/b"));
+        assert!(data.dirs[0].dir.exists("dst_tree/a/c"));
+
+        let file1_content = data.dirs[0].dir.read_to_string("dst_tree/a/file1.txt")?;
+        assert_eq!(file1_content, "content A");
+
+        let file2_content = data.dirs[0].dir.read_to_string("dst_tree/a/b/file2.txt")?;
+        assert_eq!(file2_content, "content B");
+
+        assert!(data.dirs[0].dir.read_dir("dst_tree/a/c")?.next().is_none());
+
+        Ok(())
+    }
+
     fn test_copy_file_dst_exists_fails(
         recursive: Option<bool>,
         expected_message: &str,
