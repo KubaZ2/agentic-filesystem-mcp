@@ -23,7 +23,7 @@ use tokio::{
 };
 
 mod cap_ignore_walker;
-mod copy_recursive;
+mod copy;
 mod tools;
 
 #[derive(Parser)]

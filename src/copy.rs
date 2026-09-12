@@ -15,6 +15,42 @@ pub fn copy_recursive(
     copy_recursive_unknown(src_dir, src_path, dst_dir, dst_path, metadata)
 }
 
+pub fn copy_file(src_dir: &Dir, src_path: &Path, dst_dir: &Dir, dst_path: &Path) -> Result<()> {
+    let mut src_file = src_dir.open(src_path)?;
+
+    let mut dst_file = dst_dir.open_with(
+        dst_path,
+        cap_std::fs::OpenOptions::new().create_new(true).write(true),
+    )?;
+
+    std::io::copy(&mut src_file, &mut dst_file)?;
+
+    dst_file.set_permissions(src_file.metadata()?.permissions())?;
+
+    Ok(())
+}
+
+fn copy_file_with_metadata(
+    src_dir: &Dir,
+    src_path: &Path,
+    src_metadata: &Metadata,
+    dst_dir: &Dir,
+    dst_path: &Path,
+) -> Result<()> {
+    let mut src_file = src_dir.open(src_path)?;
+
+    let mut dst_file = dst_dir.open_with(
+        dst_path,
+        cap_std::fs::OpenOptions::new().create_new(true).write(true),
+    )?;
+
+    std::io::copy(&mut src_file, &mut dst_file)?;
+
+    dst_file.set_permissions(src_metadata.permissions())?;
+
+    Ok(())
+}
+
 fn copy_recursive_unknown(
     ancestor_src_dir: &Dir,
     src_path: &Path,
@@ -59,7 +95,13 @@ fn copy_recursive_unknown(
             }
         }
     } else if file_type.is_file() {
-        ancestor_src_dir.copy(src_path, ancestor_dst_dir, dst_path)?;
+        copy_file_with_metadata(
+            ancestor_src_dir,
+            src_path,
+            &metadata,
+            ancestor_dst_dir,
+            dst_path,
+        )?;
     } else if file_type.is_dir() {
         let current_src_dir = ancestor_src_dir.open_dir(src_path)?;
 
