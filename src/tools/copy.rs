@@ -292,7 +292,18 @@ mod tests {
         let (_tempdir, data) = setup_test_fs()?;
 
         data.dirs[0].dir.write("test.txt", "Hello, world!")?;
-        data.dirs[0].dir.symlink("test.txt", "test_symlink")?;
+
+        #[cfg(not(windows))]
+        {
+            data.dirs[0]
+                .dir
+                .symlink_contents("test.txt", "test_symlink")?;
+        }
+
+        #[cfg(windows)]
+        {
+            data.dirs[0].dir.symlink_file("test.txt", "test_symlink")?;
+        }
 
         let params = Parameters(CopyParams {
             src_path: "test_symlink".to_string(),
@@ -338,7 +349,18 @@ mod tests {
         let (_tempdir, data) = setup_test_fs()?;
 
         data.dirs[0].dir.write("test.txt", "Hello, world!")?;
-        data.dirs[0].dir.symlink("test.txt", "test_symlink")?;
+
+        #[cfg(not(windows))]
+        {
+            data.dirs[0]
+                .dir
+                .symlink_contents("test.txt", "test_symlink")?;
+        }
+
+        #[cfg(windows)]
+        {
+            data.dirs[0].dir.symlink_file("test.txt", "test_symlink")?;
+        }
 
         let params = Parameters(CopyParams {
             src_path: "test_symlink".to_string(),
@@ -377,6 +399,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(windows))] // cap std does not support absolute symlinks on Windows
     #[test]
     fn test_copy_symlink_recursive_true_copies_absolute_links() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
@@ -414,6 +437,10 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(windows))]
+    // cap std hides Windows-specific metadata extensions behind a feature flag,
+    // the current copy implementation follows the symlink to detect whether
+    // the symlink targets a directory or a file
     #[test]
     fn test_copy_symlink_recursive_true_copies_broken_links() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
