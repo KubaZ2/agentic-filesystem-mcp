@@ -38,14 +38,138 @@ impl Filesystem {
 
         if parents {
             dir.dir
-                .create_dir_all(&rel_path)
+                .create_dir_all(rel_path)
                 .context("Failed to create the directory with parents")?;
         } else {
             dir.dir
-                .create_dir(&rel_path)
+                .create_dir(rel_path)
                 .context("Failed to create the directory")?;
         }
 
         Ok("Successfully created the directory".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::test_utils::setup_test_fs;
+
+    fn test_mkdir_creates_new_directory(parents: Option<bool>) -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        let params = Parameters(MkdirParams {
+            path: "new_dir".to_string(),
+            parents,
+        });
+
+        let result = Filesystem::try_mkdir(data.clone(), params)?;
+
+        assert_eq!(result, "Successfully created the directory");
+
+        assert!(data.dirs[0].dir.exists("new_dir"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mkdir_creates_new_directory_parents_none() -> Result<()> {
+        test_mkdir_creates_new_directory(None)
+    }
+
+    #[test]
+    fn test_mkdir_creates_new_directory_parents_false() -> Result<()> {
+        test_mkdir_creates_new_directory(Some(false))
+    }
+
+    #[test]
+    fn test_mkdir_creates_new_directory_parents_true() -> Result<()> {
+        test_mkdir_creates_new_directory(Some(true))
+    }
+
+    fn test_mkdir_creates_nested_directory(parents: Option<bool>) -> Result<String> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        let params = Parameters(MkdirParams {
+            path: "nested/dir".to_string(),
+            parents,
+        });
+
+        Filesystem::try_mkdir(data.clone(), params)
+    }
+
+    fn test_mkdir_creates_nested_directory_should_fail_due_to_parents(
+        parents: Option<bool>,
+    ) -> Result<()> {
+        let result = test_mkdir_creates_nested_directory(parents);
+
+        assert_eq!(
+            result.err().map(|e| e.to_string()),
+            Some("Failed to create the directory".to_string())
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mkdir_creates_nested_directory_with_parents_none() -> Result<()> {
+        test_mkdir_creates_nested_directory_should_fail_due_to_parents(None)
+    }
+
+    #[test]
+    fn test_mkdir_creates_nested_directory_with_parents_true() -> Result<()> {
+        let result = test_mkdir_creates_nested_directory(Some(true))?;
+
+        assert_eq!(result, "Successfully created the directory");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mkdir_creates_nested_directory_with_parents_false() -> Result<()> {
+        test_mkdir_creates_nested_directory_should_fail_due_to_parents(Some(false))
+    }
+
+    fn test_mkdir_existing_dir(parents: Option<bool>) -> Result<String> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.create_dir("existing_dir")?;
+
+        let params = Parameters(MkdirParams {
+            path: "existing_dir".to_string(),
+            parents,
+        });
+
+        Filesystem::try_mkdir(data.clone(), params)
+    }
+
+    fn test_mkdir_existing_dir_should_fail_due_to_parents(parents: Option<bool>) -> Result<()> {
+        let result = test_mkdir_existing_dir(parents);
+
+        assert_eq!(
+            result.err().map(|e| e.to_string()),
+            Some("Failed to create the directory".to_string())
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mkdir_existing_dir_with_parents_none() -> Result<()> {
+        test_mkdir_existing_dir_should_fail_due_to_parents(None)
+    }
+
+    #[test]
+    fn test_mkdir_existing_dir_with_parents_true() -> Result<()> {
+        let result = test_mkdir_existing_dir(Some(true))?;
+
+        assert_eq!(result, "Successfully created the directory");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mkdir_existing_dir_with_parents_false() -> Result<()> {
+        test_mkdir_existing_dir_should_fail_due_to_parents(Some(false))
     }
 }

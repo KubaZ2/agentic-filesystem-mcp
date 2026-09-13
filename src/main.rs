@@ -23,17 +23,17 @@ use tokio::{
 };
 
 mod cap_ignore_walker;
-mod copy_recursive;
+mod copy;
 mod tools;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
-    // The root paths to serve
+    /// The root paths to serve
     #[arg(long, num_args = 1..)]
     root: Vec<OsString>,
 
-    // Whether to use absolute paths instead of relative paths
+    /// Whether to use absolute paths instead of relative paths
     #[arg(long, default_value_t = false)]
     absolute_paths: bool,
 }
@@ -70,6 +70,25 @@ async fn main() -> Result<()> {
         get_root_path(&abs_paths)?
     };
 
+    log_info(&format!(
+        "Root path: {}",
+        root_path
+            .as_ref()
+            .map_or("None".to_string(), |p| p.display().to_string())
+    ));
+
+    let dirs = get_dirs(&abs_paths, root_path.as_deref())?;
+
+    let filesystem = Filesystem::new(dirs);
+
+    let service = filesystem.serve((stdin(), stdout())).await?;
+
+    service.waiting().await?;
+
+    Ok(())
+}
+
+fn get_dirs(abs_paths: &[PathBuf], root_path: Option<&Path>) -> Result<Vec<DirInfo>> {
     let mut dirs = abs_paths
         .iter()
         .map(|abs_path| {
@@ -77,7 +96,7 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("Error opening directory {}", abs_path.display()))?;
 
             let path = match root_path {
-                Some(ref root_path) => abs_path.strip_prefix(root_path)?,
+                Some(root_path) => abs_path.strip_prefix(root_path)?,
                 None => abs_path,
             }
             .to_path_buf();
@@ -88,22 +107,7 @@ async fn main() -> Result<()> {
 
     dirs.sort_unstable_by(|(count_left, _), (count_right, _)| count_right.cmp(count_left));
 
-    let dirs = dirs.into_iter().map(|(_, dir)| dir).collect::<Vec<_>>();
-
-    log_info(&format!(
-        "Root path: {}",
-        root_path
-            .as_ref()
-            .map_or("None".to_string(), |p| p.display().to_string())
-    ));
-
-    let filesystem = Filesystem::new(dirs);
-
-    let service = filesystem.serve((stdin(), stdout())).await?;
-
-    service.waiting().await?;
-
-    Ok(())
+    Ok(dirs.into_iter().map(|(_, dir)| dir).collect::<Vec<_>>())
 }
 
 fn get_root_path(paths: &[PathBuf]) -> Result<Option<PathBuf>> {
@@ -154,9 +158,9 @@ impl FilesystemData {
 
         for dir in &self.dirs {
             if dir.path == path {
-                return Ok((&dir, Path::new(".")));
+                return Ok((dir, Path::new(".")));
             } else if let Ok(rel_path) = path.strip_prefix(&dir.path) {
-                return Ok((&dir, rel_path));
+                return Ok((dir, rel_path));
             }
         }
 
@@ -302,5 +306,97 @@ impl Filesystem {
             "'{}' handled an unexpected error: {:#}",
             tool, err
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn get_empty_path() -> PathBuf {
+        #[cfg(windows)]
+        {
+            PathBuf::from("C:\\")
+        }
+
+        #[cfg(not(windows))]
+        {
+            PathBuf::from("/")
+        }
+    }
+
+    #[test]
+    fn test_get_dirs() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+
+        let root_path = tempdir.path();
+
+        std::fs::create_dir_all(root_path.join("dir_a/dir_b"))?;
+        std::fs::create_dir_all(root_path.join("dir_c"))?;
+
+        let abs_paths = vec![
+            root_path.join("dir_a/dir_b"),
+            root_path.join("dir_a"),
+            root_path.join("dir_c"),
+        ];
+
+        let dirs = get_dirs(&abs_paths, Some(root_path))?;
+
+        assert_eq!(dirs.len(), 3);
+        assert_eq!(dirs[0].path, PathBuf::from("dir_a/dir_b"));
+        assert!(dirs[1].path == *"dir_a" || dirs[1].path == *"dir_c");
+        assert!(dirs[2].path == *"dir_a" || dirs[2].path == *"dir_c");
+        assert_ne!(dirs[1].path, dirs[2].path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_root_path_empty_root() -> Result<()> {
+        let root_path = get_empty_path();
+
+        let abs_paths = vec![
+            root_path.join("dir_a/dir_b"),
+            root_path.join("dir_a"),
+            root_path.join("dir_c"),
+        ];
+
+        let root = get_root_path(&abs_paths)?;
+
+        assert_eq!(root, Some(root_path.to_path_buf()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_root_path_nested_root() -> Result<()> {
+        let root_path = get_empty_path();
+
+        let abs_paths = vec![
+            root_path.join("some/nested/dir/dir_a/dir_b"),
+            root_path.join("some/nested/dir/dir_a"),
+            root_path.join("some/nested/dir/dir_c"),
+        ];
+
+        let root = get_root_path(&abs_paths)?;
+
+        assert_eq!(root, Some(root_path.join("some/nested/dir")));
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_get_root_path_no_common_root() -> Result<()> {
+        let path_a = PathBuf::from("C:\\dir_a\\dir_b");
+        let path_b = PathBuf::from("D:\\dir_c");
+
+        let abs_paths = vec![path_a, path_b];
+
+        let root = get_root_path(&abs_paths)?;
+
+        assert_eq!(root, None);
+
+        Ok(())
     }
 }

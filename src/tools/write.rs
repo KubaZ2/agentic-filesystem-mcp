@@ -43,3 +43,72 @@ impl Filesystem {
         Ok("Successfully wrote the file".to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::test_utils::setup_test_fs;
+
+    #[test]
+    fn test_write_creates_new_file() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        let params = Parameters(WriteParams {
+            path: "test_file.txt".to_string(),
+            content: "Hello, world!".to_string(),
+        });
+
+        let result = Filesystem::try_write(data.clone(), params)?;
+        assert_eq!(result, "Successfully wrote the file");
+
+        let content = data.dirs[0].dir.read_to_string("test_file.txt")?;
+
+        assert_eq!(content, "Hello, world!");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_creates_parent_directories() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        let params = Parameters(WriteParams {
+            path: "deeply/nested/directory/test_file.txt".to_string(),
+            content: "Hello from the nest!".to_string(),
+        });
+
+        let result = Filesystem::try_write(data.clone(), params)?;
+        assert_eq!(result, "Successfully wrote the file");
+
+        let content = data.dirs[0]
+            .dir
+            .read_to_string("deeply/nested/directory/test_file.txt")?;
+
+        assert_eq!(content, "Hello from the nest!");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_overwrites_existing_file() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0]
+            .dir
+            .write("overwrite_me.txt", "Initial content")?;
+
+        let overwrite_params = Parameters(WriteParams {
+            path: "overwrite_me.txt".to_string(),
+            content: "New content".to_string(),
+        });
+
+        let result = Filesystem::try_write(data.clone(), overwrite_params)?;
+        assert_eq!(result, "Successfully wrote the file");
+
+        let content = data.dirs[0].dir.read_to_string("overwrite_me.txt")?;
+
+        assert_eq!(content, "New content");
+
+        Ok(())
+    }
+}
