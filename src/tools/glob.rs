@@ -146,32 +146,65 @@ mod tests {
     use super::*;
 
     use anyhow::Result;
+    use cap_fs_ext::{DirExt, SystemTimeSpec};
     use std::{
         io::Write,
         time::{Duration, SystemTime},
     };
 
-    fn execute_glob_with_times(files: &[(&str, u64)], params: GlobParams) -> Result<String> {
+    fn execute_glob_with_content_and_times(
+        files: &[(&str, &str, u64)],
+        params: GlobParams,
+    ) -> Result<String> {
         let (_tempdir, data) = setup_test_fs()?;
         let now = SystemTime::now();
 
-        for (file_path, time_offset) in files {
+        for (file_path, content, time_offset) in files {
             let path = Path::new(file_path);
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()
             {
-                let _ = data.dirs[0].dir.create_dir_all(parent);
+                data.dirs[0].dir.create_dir_all(parent)?;
             }
 
             let mut file = data.dirs[0].dir.create(file_path)?;
 
-            file.write_all("content".as_bytes())?;
+            file.write_all(content.as_bytes())?;
 
-            file.into_std()
-                .set_modified(now + Duration::from_secs(*time_offset))?;
+            let mod_time = now + Duration::from_secs(*time_offset);
+            file.into_std().set_modified(mod_time)?;
+
+            for ancestor in path.ancestors().skip(1) {
+                if ancestor.as_os_str().is_empty() {
+                    continue;
+                }
+                data.dirs[0].dir.set_mtime(
+                    ancestor,
+                    SystemTimeSpec::Absolute(cap_primitives::time::SystemTime::from_std(mod_time)),
+                )?;
+            }
         }
 
         Filesystem::try_glob(data.clone(), Parameters(params))
+    }
+
+    fn execute_glob_with_times(files: &[(&str, u64)], params: GlobParams) -> Result<String> {
+        let files_with_content_and_times: Vec<(&str, &str, u64)> = files
+            .iter()
+            .map(|(path, time)| (*path, "content", *time))
+            .collect();
+
+        execute_glob_with_content_and_times(&files_with_content_and_times, params)
+    }
+
+    fn execute_glob_with_content(files: &[(&str, &str)], params: GlobParams) -> Result<String> {
+        let files_with_content_and_times: Vec<(&str, &str, u64)> = files
+            .iter()
+            .enumerate()
+            .map(|(i, &(path, content))| (path, content, i as u64))
+            .collect();
+
+        execute_glob_with_content_and_times(&files_with_content_and_times, params)
     }
 
     fn execute_glob(files: &[&str], params: GlobParams) -> Result<String> {
@@ -413,6 +446,133 @@ mod tests {
         assert_eq!(
             page4,
             "No results found at the specified offset (found 5 in total)"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_respects_gitignore() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.create_dir("ignored_dir")?;
+
+        data.dirs[0].dir.write("ignored_dir/file.txt", "content")?;
+
+        data.dirs[0].dir.write(".gitignore", "ignored_dir")?;
+
+        data.dirs[0].dir.write("kept.txt", "content")?;
+
+        let result = Filesystem::try_glob(data.clone(), Parameters(default_glob_params("*.txt")))?;
+
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 1 found in total):\nkept.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_respects_hidden_files() -> Result<()> {
+        let result = execute_glob(
+            &[".hidden_dir/hidden.txt", "visible.txt"],
+            default_glob_params("*.txt"),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 1 found in total):\nvisible.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_glob_overrides_gitignore_and_hidden() -> Result<()> {
+        let result = execute_glob_with_content(
+            &[
+                ("visible.txt", "content"),
+                ("ignored_dir/file.txt", "content"),
+                (".gitignore", "ignored_dir"),
+            ],
+            default_glob_params("*"),
+        )?;
+
+        assert_eq!(
+            result,
+            format!(
+                "Showing 4 result(s) (out of 4 found in total):\n.gitignore\nignored_dir{}file.txt\nignored_dir\nvisible.txt\n",
+                std::path::MAIN_SEPARATOR,
+            )
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_complex_glob_overrides_gitignore() -> Result<()> {
+        let result = execute_glob_with_content(
+            &[
+                ("visible.txt", "content"),
+                ("ignored.txt", "content"),
+                (".gitignore", "ignored.txt"),
+            ],
+            default_glob_params("*.txt"),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 2 found in total):\nignored.txt\nvisible.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_complex_glob_overrides_hidden() -> Result<()> {
+        let result = execute_glob(
+            &["visible.txt", ".hidden.txt"],
+            default_glob_params("*.txt"),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 2 found in total):\n.hidden.txt\nvisible.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_invalid_gitignore_line_ignored() -> Result<()> {
+        let result = execute_glob_with_content(
+            &[
+                ("a/visible.txt", "content"),
+                ("b/ignored.txt", "content"),
+                (".gitignore", "[z-a]\nb/"),
+            ],
+            default_glob_params("*.txt"),
+        )?;
+
+        assert_eq!(
+            result,
+            format!(
+                "Showing 1 result(s) (out of 1 found in total):\na{}visible.txt\n",
+                std::path::MAIN_SEPARATOR,
+            )
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_trailing_slash_means_directory() -> Result<()> {
+        let result = execute_glob(&["a/a", "b"], default_glob_params("/*/"))?;
+
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 1 found in total):\na\n"
         );
 
         Ok(())

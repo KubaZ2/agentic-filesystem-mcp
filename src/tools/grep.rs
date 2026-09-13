@@ -287,12 +287,39 @@ mod tests {
     use super::*;
 
     use anyhow::Result;
+    use cap_fs_ext::{DirExt, SystemTimeSpec};
+    use std::{
+        io::Write,
+        time::{Duration, SystemTime},
+    };
 
     fn execute_grep(files: &[(&str, &str)], params: GrepParams) -> Result<String> {
         let (_tempdir, data) = setup_test_fs()?;
+        let now = SystemTime::now();
 
-        for (name, content) in files {
-            data.dirs[0].dir.write(name, content)?;
+        for (i, &(name, content)) in files.iter().enumerate() {
+            let path = std::path::Path::new(name);
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    data.dirs[0].dir.create_dir_all(parent)?;
+                }
+            }
+
+            let mut file = data.dirs[0].dir.create(name)?;
+            file.write_all(content.as_bytes())?;
+
+            let mod_time = now + Duration::from_secs(i as u64);
+            file.into_std().set_modified(mod_time)?;
+
+            for ancestor in path.ancestors().skip(1) {
+                if ancestor.as_os_str().is_empty() {
+                    continue;
+                }
+                data.dirs[0].dir.set_mtime(
+                    ancestor,
+                    SystemTimeSpec::Absolute(cap_primitives::time::SystemTime::from_std(mod_time)),
+                )?;
+            }
         }
 
         Filesystem::try_grep(data.clone(), Parameters(params))
@@ -949,6 +976,144 @@ mod tests {
     #[test]
     fn test_grep_offset_with_no_matches() -> Result<()> {
         let result = run_pagination_test(&[("a.txt", "world\n")], "hello", None, Some(5))?;
+
+        assert_eq!(
+            result,
+            "No results found regardless of the specified offset"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_respects_gitignore() -> Result<()> {
+        let result = execute_grep(
+            &[
+                ("ignored_dir/file.txt", "hello"),
+                (".gitignore", "ignored_dir\n"),
+                ("kept.txt", "hello"),
+            ],
+            default_grep_params("hello"),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 1 found in total):\nkept.txt:1:hello\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_respects_hidden_files() -> Result<()> {
+        let result = execute_grep(
+            &[
+                (".hidden_dir/hidden.txt", "hello"),
+                ("visible.txt", "hello"),
+            ],
+            default_grep_params("hello"),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 1 found in total):\nvisible.txt:1:hello\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_glob_overrides_gitignore_and_hidden() -> Result<()> {
+        let mut params = default_grep_params("hello");
+        params.glob = Some("*".to_string());
+
+        let result = execute_grep(
+            &[
+                ("visible.txt", "hello"),
+                ("ignored_dir/file.txt", "hello"),
+                (".gitignore", "ignored_dir\nhello"),
+            ],
+            params,
+        )?;
+
+        assert_eq!(
+            result,
+            format!(
+                "Showing 3 result(s) (out of 3 found in total):\n.gitignore:2:hello\nignored_dir{}file.txt:1:hello\nvisible.txt:1:hello\n",
+                std::path::MAIN_SEPARATOR,
+            )
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_complex_glob_overrides_gitignore() -> Result<()> {
+        let mut params = default_grep_params("hello");
+        params.glob = Some("*.txt".to_string());
+        let result = execute_grep(
+            &[
+                ("visible.txt", "hello"),
+                ("ignored.txt", "hello"),
+                (".gitignore", "ignored.txt\n"),
+            ],
+            params,
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 2 found in total):\nignored.txt:1:hello\nvisible.txt:1:hello\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_complex_glob_overrides_hidden() -> Result<()> {
+        let mut params = default_grep_params("hello");
+        params.glob = Some("*.txt".to_string());
+        let result = execute_grep(
+            &[("visible.txt", "hello"), (".hidden.txt", "hello")],
+            params,
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 2 found in total):\n.hidden.txt:1:hello\nvisible.txt:1:hello\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_invalid_gitignore_line_ignored() -> Result<()> {
+        let mut params = default_grep_params("hello");
+        params.glob = Some("*.txt".to_string());
+        let result = execute_grep(
+            &[
+                ("a/visible.txt", "hello"),
+                ("b/ignored.txt", "hello"),
+                (".gitignore", "[z-a]\nb/"),
+            ],
+            params,
+        )?;
+
+        assert_eq!(
+            result,
+            format!(
+                "Showing 1 result(s) (out of 1 found in total):\na{}visible.txt:1:hello\n",
+                std::path::MAIN_SEPARATOR,
+            )
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_trailing_slash_means_directory() -> Result<()> {
+        let mut params = default_grep_params("hello");
+        params.glob = Some("/*/".to_string());
+        let result = execute_grep(&[("a/a", "hello"), ("b", "hello")], params)?;
 
         assert_eq!(
             result,
