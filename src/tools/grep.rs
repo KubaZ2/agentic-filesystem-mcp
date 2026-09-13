@@ -288,28 +288,90 @@ mod tests {
 
     use anyhow::Result;
 
-    #[test]
-    fn test_grep_basic_content() -> Result<()> {
+    fn execute_grep(files: &[(&str, &str)], params: GrepParams) -> Result<String> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0]
-            .dir
-            .write("test.txt", "hello world\nfoo bar\n")?;
+        for (name, content) in files {
+            data.dirs[0].dir.write(name, content)?;
+        }
 
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
+        Filesystem::try_grep(data.clone(), Parameters(params))
+    }
+
+    fn default_grep_params(pattern: &str) -> GrepParams {
+        GrepParams {
+            pattern: pattern.to_string(),
+            path: None,
+            glob: None,
+            output_mode: None,
+            before_context: None,
+            after_context: None,
+            limit: None,
+            offset: None,
+            multiline: None,
+            show_line_numbers: None,
+        }
+    }
+
+    fn run_context_test(
+        file_content: &str,
+        pattern: &str,
+        before: Option<usize>,
+        after: Option<usize>,
+    ) -> Result<String> {
+        let mut params = default_grep_params(pattern);
+        params.before_context = before;
+        params.after_context = after;
+        params.show_line_numbers = Some(true);
+
+        execute_grep(&[("test.txt", file_content)], params)
+    }
+
+    fn run_multiline_test(
+        file_content: &str,
+        pattern: &str,
+        multiline: Option<bool>,
+        show_line_numbers: Option<bool>,
+    ) -> Result<String> {
+        let mut params = default_grep_params(pattern);
+        params.multiline = multiline;
+        params.show_line_numbers = show_line_numbers;
+
+        execute_grep(&[("test.txt", file_content)], params)
+    }
+
+    fn run_pagination_test(
+        files: &[(&str, &str)],
+        pattern: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<String> {
+        let mut params = default_grep_params(pattern);
+        params.limit = limit;
+        params.offset = offset;
+
+        execute_grep(files, params)
+    }
+
+    const FILES_3: &[(&str, &str)] = &[
+        ("a.txt", "hello\n"),
+        ("b.txt", "hello\n"),
+        ("c.txt", "hello\n"),
+    ];
+
+    const FILES_5: &[(&str, &str)] = &[
+        ("a.txt", "hello\n"),
+        ("b.txt", "hello\n"),
+        ("c.txt", "hello\n"),
+        ("d.txt", "hello\n"),
+        ("e.txt", "hello\n"),
+    ];
+
+    #[test]
+    fn test_grep_basic_content() -> Result<()> {
+        let result = execute_grep(
+            &[("test.txt", "hello world\nfoo bar\n")],
+            default_grep_params("hello"),
         )?;
 
         assert_eq!(
@@ -322,24 +384,9 @@ mod tests {
 
     #[test]
     fn test_grep_no_results() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("test.txt", "hello world\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "goodbye".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
+        let result = execute_grep(
+            &[("test.txt", "hello world\n")],
+            default_grep_params("goodbye"),
         )?;
 
         assert_eq!(
@@ -352,26 +399,9 @@ mod tests {
 
     #[test]
     fn test_grep_multiple_matches_in_file() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "hello one\nfoo bar\nhello two\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
+        let result = execute_grep(
+            &[("test.txt", "hello one\nfoo bar\nhello two\n")],
+            default_grep_params("hello"),
         )?;
 
         assert_eq!(
@@ -384,25 +414,9 @@ mod tests {
 
     #[test]
     fn test_grep_multiple_files() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
+        let result = execute_grep(
+            &[("a.txt", "hello\n"), ("b.txt", "hello\n")],
+            default_grep_params("hello"),
         )?;
 
         assert_eq!(
@@ -415,27 +429,10 @@ mod tests {
 
     #[test]
     fn test_grep_files_with_matches() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
+        let mut params = default_grep_params("hello");
+        params.output_mode = Some(GrepOutputMode::FilesWithMatches);
 
-        data.dirs[0]
-            .dir
-            .write("test.txt", "hello world\nfoo bar\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: Some(GrepOutputMode::FilesWithMatches),
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = execute_grep(&[("test.txt", "hello world\nfoo bar\n")], params)?;
 
         assert_eq!(
             result,
@@ -447,27 +444,10 @@ mod tests {
 
     #[test]
     fn test_grep_count() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
+        let mut params = default_grep_params("hello");
+        params.output_mode = Some(GrepOutputMode::Count);
 
-        data.dirs[0]
-            .dir
-            .write("test.txt", "hello one\nfoo bar\nhello two\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: Some(GrepOutputMode::Count),
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = execute_grep(&[("test.txt", "hello one\nfoo bar\nhello two\n")], params)?;
 
         assert_eq!(
             result,
@@ -479,25 +459,10 @@ mod tests {
 
     #[test]
     fn test_grep_no_line_numbers() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
+        let mut params = default_grep_params("hello");
+        params.show_line_numbers = Some(false);
 
-        data.dirs[0].dir.write("test.txt", "hello world\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(false),
-            }),
-        )?;
+        let result = execute_grep(&[("test.txt", "hello world\n")], params)?;
 
         assert_eq!(
             result,
@@ -509,26 +474,10 @@ mod tests {
 
     #[test]
     fn test_grep_with_glob_filter() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
+        let mut params = default_grep_params("hello");
+        params.glob = Some("*.txt".to_string());
 
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.rs", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: Some("*.txt".to_string()),
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = execute_grep(&[("a.txt", "hello\n"), ("b.rs", "hello\n")], params)?;
 
         assert_eq!(
             result,
@@ -540,25 +489,7 @@ mod tests {
 
     #[test]
     fn test_grep_invalid_regex() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("test.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "[invalid".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        );
+        let result = execute_grep(&[("test.txt", "hello\n")], default_grep_params("[invalid"));
 
         assert_eq!(
             result.err().map(|e| e.to_string()),
@@ -570,25 +501,10 @@ mod tests {
 
     #[test]
     fn test_grep_invalid_glob() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
+        let mut params = default_grep_params("hello");
+        params.glob = Some("[invalid".to_string());
 
-        data.dirs[0].dir.write("test.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: Some("[invalid".to_string()),
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        );
+        let result = execute_grep(&[("test.txt", "hello\n")], params);
 
         assert_eq!(
             result.err().map(|e| e.to_string()),
@@ -600,26 +516,11 @@ mod tests {
 
     #[test]
     fn test_grep_multiline_dot_matches_newline() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "first line\nsecond line\nthird line\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "first line.*third line".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: Some(true),
-                show_line_numbers: None,
-            }),
+        let result = run_multiline_test(
+            "first line\nsecond line\nthird line\n",
+            "first line.*third line",
+            Some(true),
+            None,
         )?;
 
         assert!(
@@ -638,26 +539,11 @@ mod tests {
 
     #[test]
     fn test_grep_non_multiline_does_not_match_across_lines() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "first line\nsecond line\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "first line.*second line".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: Some(false),
-                show_line_numbers: None,
-            }),
+        let result = run_multiline_test(
+            "first line\nsecond line\n",
+            "first line.*second line",
+            Some(false),
+            None,
         )?;
 
         assert_eq!(
@@ -670,25 +556,7 @@ mod tests {
 
     #[test]
     fn test_grep_multiline_pattern_with_anchors() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("test.txt", "alpha\nbeta\ngamma\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "^beta$".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: Some(true),
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = run_multiline_test("alpha\nbeta\ngamma\n", "^beta$", Some(true), None)?;
 
         assert!(
             result.contains("beta"),
@@ -701,25 +569,7 @@ mod tests {
 
     #[test]
     fn test_grep_multiline_no_match_when_pattern_spans_missing_text() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("test.txt", "aaa\nbbb\nccc\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "aaa.*ddd".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: Some(true),
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = run_multiline_test("aaa\nbbb\nccc\n", "aaa.*ddd", Some(true), None)?;
 
         assert_eq!(
             result,
@@ -731,26 +581,11 @@ mod tests {
 
     #[test]
     fn test_grep_multiline_with_multiple_matching_lines() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "foo bar\nbaz qux\nhello world\nfoo bar\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "foo bar\nbaz qux".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: Some(true),
-                show_line_numbers: Some(false),
-            }),
+        let result = run_multiline_test(
+            "foo bar\nbaz qux\nhello world\nfoo bar\n",
+            "foo bar\nbaz qux",
+            Some(true),
+            Some(false),
         )?;
 
         assert!(
@@ -769,27 +604,11 @@ mod tests {
 
     #[test]
     fn test_grep_before_context() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write(
-            "test.txt",
+        let result = run_context_test(
             "line one\nline two\nTARGET\nline four\nline five\n",
-        )?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "TARGET".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: Some(2),
-                after_context: None,
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(true),
-            }),
+            "TARGET",
+            Some(2),
+            None,
         )?;
 
         assert!(
@@ -818,27 +637,11 @@ mod tests {
 
     #[test]
     fn test_grep_after_context() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write(
-            "test.txt",
+        let result = run_context_test(
             "line one\nline two\nTARGET\nline four\nline five\n",
-        )?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "TARGET".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: Some(2),
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(true),
-            }),
+            "TARGET",
+            None,
+            Some(2),
         )?;
 
         assert!(
@@ -872,26 +675,11 @@ mod tests {
 
     #[test]
     fn test_grep_both_before_and_after_context() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "alpha\nbeta\nGAMMA\ndelta\nepsilon\nzeta\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "GAMMA".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: Some(2),
-                after_context: Some(2),
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(true),
-            }),
+        let result = run_context_test(
+            "alpha\nbeta\nGAMMA\ndelta\nepsilon\nzeta\n",
+            "GAMMA",
+            Some(2),
+            Some(2),
         )?;
 
         assert!(result.contains("alpha"), "Got: {}", result);
@@ -905,26 +693,11 @@ mod tests {
 
     #[test]
     fn test_grep_before_context_at_file_start() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "MATCH_HERE\nline two\nline three\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "MATCH_HERE".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: Some(3),
-                after_context: Some(1),
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(true),
-            }),
+        let result = run_context_test(
+            "MATCH_HERE\nline two\nline three\n",
+            "MATCH_HERE",
+            Some(3),
+            Some(1),
         )?;
 
         assert!(
@@ -943,26 +716,11 @@ mod tests {
 
     #[test]
     fn test_grep_after_context_at_file_end() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "line one\nline two\nFINAL_MATCH\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "FINAL_MATCH".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: Some(1),
-                after_context: Some(3),
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(true),
-            }),
+        let result = run_context_test(
+            "line one\nline two\nFINAL_MATCH\n",
+            "FINAL_MATCH",
+            Some(1),
+            Some(3),
         )?;
 
         assert!(
@@ -981,25 +739,7 @@ mod tests {
 
     #[test]
     fn test_grep_context_larger_than_file() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("test.txt", "a\nb\nC_MATCH\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "C_MATCH".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: Some(10),
-                after_context: Some(10),
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(true),
-            }),
-        )?;
+        let result = run_context_test("a\nb\nC_MATCH\n", "C_MATCH", Some(10), Some(10))?;
 
         assert!(result.contains("a"), "Got: {}", result);
         assert!(result.contains("b"), "Got: {}", result);
@@ -1010,27 +750,8 @@ mod tests {
 
     #[test]
     fn test_grep_context_zero() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "line one\nTARGET\nline three\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "TARGET".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: Some(0),
-                after_context: Some(0),
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(true),
-            }),
-        )?;
+        let result =
+            run_context_test("line one\nTARGET\nline three\n", "TARGET", Some(0), Some(0))?;
 
         assert!(
             result.contains("TARGET"),
@@ -1053,26 +774,11 @@ mod tests {
 
     #[test]
     fn test_grep_context_with_multiple_matches() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0]
-            .dir
-            .write("test.txt", "aaa\nMATCH1\nbbb\nccc\nMATCH2\nddd\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "MATCH".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: Some(1),
-                after_context: Some(1),
-                limit: None,
-                offset: None,
-                multiline: None,
-                show_line_numbers: Some(true),
-            }),
+        let result = run_context_test(
+            "aaa\nMATCH1\nbbb\nccc\nMATCH2\nddd\n",
+            "MATCH",
+            Some(1),
+            Some(1),
         )?;
 
         assert!(result.contains("MATCH1"), "Got: {}", result);
@@ -1087,27 +793,7 @@ mod tests {
 
     #[test]
     fn test_grep_limit_1() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.txt", "hello\n")?;
-        data.dirs[0].dir.write("c.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: Some(1),
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = run_pagination_test(FILES_3, "hello", Some(1), None)?;
 
         assert!(
             result.contains("Showing 1 result(s) (out of 3 found in total)"),
@@ -1120,27 +806,7 @@ mod tests {
 
     #[test]
     fn test_grep_limit_2() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.txt", "hello\n")?;
-        data.dirs[0].dir.write("c.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: Some(2),
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = run_pagination_test(FILES_3, "hello", Some(2), None)?;
 
         assert!(
             result.contains("Showing 2 result(s) (out of 3 found in total)"),
@@ -1153,25 +819,7 @@ mod tests {
 
     #[test]
     fn test_grep_limit_0() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: Some(0),
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = run_pagination_test(&[("a.txt", "hello\n")], "hello", Some(0), None)?;
 
         assert_eq!(
             result,
@@ -1183,25 +831,11 @@ mod tests {
 
     #[test]
     fn test_grep_offset_0_explicit() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: Some(0),
-                multiline: None,
-                show_line_numbers: None,
-            }),
+        let result = run_pagination_test(
+            &[("a.txt", "hello\n"), ("b.txt", "hello\n")],
+            "hello",
+            None,
+            Some(0),
         )?;
 
         assert!(
@@ -1215,27 +849,7 @@ mod tests {
 
     #[test]
     fn test_grep_offset_1() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.txt", "hello\n")?;
-        data.dirs[0].dir.write("c.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: Some(1),
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = run_pagination_test(FILES_3, "hello", None, Some(1))?;
 
         assert!(
             result.contains("Showing 2 result(s) (out of 3 found in total)"),
@@ -1255,25 +869,11 @@ mod tests {
 
     #[test]
     fn test_grep_offset_beyond_results() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: Some(10),
-                multiline: None,
-                show_line_numbers: None,
-            }),
+        let result = run_pagination_test(
+            &[("a.txt", "hello\n"), ("b.txt", "hello\n")],
+            "hello",
+            None,
+            Some(10),
         )?;
 
         assert_eq!(
@@ -1286,25 +886,11 @@ mod tests {
 
     #[test]
     fn test_grep_offset_equals_total() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: Some(2),
-                multiline: None,
-                show_line_numbers: None,
-            }),
+        let result = run_pagination_test(
+            &[("a.txt", "hello\n"), ("b.txt", "hello\n")],
+            "hello",
+            None,
+            Some(2),
         )?;
 
         assert_eq!(
@@ -1317,96 +903,28 @@ mod tests {
 
     #[test]
     fn test_grep_limit_and_offset_pagination() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-        data.dirs[0].dir.write("b.txt", "hello\n")?;
-        data.dirs[0].dir.write("c.txt", "hello\n")?;
-        data.dirs[0].dir.write("d.txt", "hello\n")?;
-        data.dirs[0].dir.write("e.txt", "hello\n")?;
-
-        let page1 = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: Some(2),
-                offset: Some(0),
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
-
+        let page1 = run_pagination_test(FILES_5, "hello", Some(2), Some(0))?;
         assert!(
             page1.contains("Showing 2 result(s) (out of 5 found in total)"),
             "Page 1 expected 2 of 5, got: {}",
             page1
         );
 
-        let page2 = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: Some(2),
-                offset: Some(2),
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
-
+        let page2 = run_pagination_test(FILES_5, "hello", Some(2), Some(2))?;
         assert!(
             page2.contains("Showing 2 result(s) (out of 5 found in total)"),
             "Page 2 expected 2 of 5, got: {}",
             page2
         );
 
-        let page3 = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: Some(2),
-                offset: Some(4),
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
-
+        let page3 = run_pagination_test(FILES_5, "hello", Some(2), Some(4))?;
         assert!(
             page3.contains("Showing 1 result(s) (out of 5 found in total)"),
             "Page 3 expected 1 of 5, got: {}",
             page3
         );
 
-        let page4 = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: Some(2),
-                offset: Some(5),
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
-
+        let page4 = run_pagination_test(FILES_5, "hello", Some(2), Some(5))?;
         assert_eq!(
             page4,
             "No results found at the specified offset (found 5 in total)"
@@ -1417,25 +935,7 @@ mod tests {
 
     #[test]
     fn test_grep_limit_larger_than_results() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "hello\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: Some(10),
-                offset: None,
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = run_pagination_test(&[("a.txt", "hello\n")], "hello", Some(10), None)?;
 
         assert!(
             result.contains("Showing 1 result(s) (out of 1 found in total)"),
@@ -1448,25 +948,7 @@ mod tests {
 
     #[test]
     fn test_grep_offset_with_no_matches() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "world\n")?;
-
-        let result = Filesystem::try_grep(
-            data.clone(),
-            Parameters(GrepParams {
-                pattern: "hello".to_string(),
-                path: None,
-                glob: None,
-                output_mode: None,
-                before_context: None,
-                after_context: None,
-                limit: None,
-                offset: Some(5),
-                multiline: None,
-                show_line_numbers: None,
-            }),
-        )?;
+        let result = run_pagination_test(&[("a.txt", "world\n")], "hello", None, Some(5))?;
 
         assert_eq!(
             result,
