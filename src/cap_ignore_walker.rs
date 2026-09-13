@@ -69,7 +69,7 @@ impl CapIgnoreWalker<'_> {
 
             let entry_path = current_path.join(&entry_name);
 
-            let is_dir = entry.file_type().map_or(false, |ft| ft.is_dir());
+            let is_dir = entry.file_type().is_ok_and(|ft| ft.is_dir());
 
             let mut is_ignored = false;
             let mut is_whitelisted = false;
@@ -104,26 +104,28 @@ impl CapIgnoreWalker<'_> {
                 }
             }
 
+            if !is_ignored && !is_whitelisted && Self::is_entry_hidden(&entry) {
+                is_ignored = true;
+            }
+
             if is_ignored {
                 continue;
             }
 
-            if is_whitelisted || self.overrides.is_empty() {
+            if !is_dir || is_whitelisted || self.overrides.is_empty() {
                 on_match(RunEntry::Match(&entry, &entry_path))?;
             }
 
-            if is_dir {
-                if let Ok(new_sub_dir) = entry.open_dir() {
-                    if let Some(gitignore) =
-                        Self::read_gitignore_safe(&new_sub_dir, &entry_path, on_match)?
-                    {
-                        let mut new_gitignores = gitignores.to_vec();
-                        new_gitignores.push(gitignore);
+            if is_dir && let Ok(new_sub_dir) = entry.open_dir() {
+                if let Some(gitignore) =
+                    Self::read_gitignore_safe(&new_sub_dir, &entry_path, on_match)?
+                {
+                    let mut new_gitignores = gitignores.to_vec();
+                    new_gitignores.push(gitignore);
 
-                        self.walk(&new_sub_dir, &entry_path, &new_gitignores, on_match)?;
-                    } else {
-                        self.walk(&new_sub_dir, &entry_path, gitignores, on_match)?;
-                    }
+                    self.walk(&new_sub_dir, &entry_path, &new_gitignores, on_match)?;
+                } else {
+                    self.walk(&new_sub_dir, &entry_path, gitignores, on_match)?;
                 }
             }
         }
@@ -195,20 +197,29 @@ impl CapIgnoreWalker<'_> {
     where
         F: FnMut(RunEntry) -> Result<()>,
     {
-        Ok(match CapIgnoreWalker::read_gitignore(dir, dir_path) {
-            Ok(gitignore) => gitignore,
-            Err(err) => {
-                on_match(RunEntry::Error(anyhow::anyhow!(
-                    "Failed to create gitignore for directory {:?}: {}",
-                    dir_path,
-                    err
-                )))?;
-                None
-            }
-        })
+        Ok(
+            match CapIgnoreWalker::read_gitignore(dir, dir_path, on_match) {
+                Ok(gitignore) => gitignore,
+                Err(err) => {
+                    on_match(RunEntry::Error(anyhow::anyhow!(
+                        "Failed to create gitignore for directory {:?}: {}",
+                        dir_path,
+                        err
+                    )))?;
+                    None
+                }
+            },
+        )
     }
 
-    fn read_gitignore(dir: &Dir, dir_path: &Path) -> Result<Option<ignore::gitignore::Gitignore>> {
+    fn read_gitignore<F>(
+        dir: &Dir,
+        dir_path: &Path,
+        on_match: &mut F,
+    ) -> Result<Option<ignore::gitignore::Gitignore>>
+    where
+        F: FnMut(RunEntry) -> Result<()>,
+    {
         if let Ok(file) = dir.open(".gitignore") {
             let mut gitignore_builder = GitignoreBuilder::new(dir_path);
 
@@ -219,7 +230,13 @@ impl CapIgnoreWalker<'_> {
             for line in reader.lines() {
                 let line = line?;
 
-                gitignore_builder.add_line(Some(gitignore_path.clone()), &line)?;
+                if let Err(err) = gitignore_builder.add_line(Some(gitignore_path.clone()), &line) {
+                    on_match(RunEntry::Error(anyhow::anyhow!(
+                        "Failed to add line to gitignore builder in {:?}: {}",
+                        gitignore_path,
+                        err
+                    )))?;
+                }
             }
 
             let gitignore = gitignore_builder.build()?;
@@ -228,5 +245,9 @@ impl CapIgnoreWalker<'_> {
         } else {
             Ok(None)
         }
+    }
+
+    fn is_entry_hidden(entry: &DirEntry) -> bool {
+        entry.file_name().as_encoded_bytes().starts_with(b".")
     }
 }
