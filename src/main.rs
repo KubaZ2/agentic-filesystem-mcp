@@ -393,7 +393,7 @@ mod tests {
 
         let abs_paths = vec![path_a, path_b];
 
-        let root = get_empty_path(&abs_paths)?;
+        let root = get_root_path(&abs_paths)?;
 
         assert_eq!(root, None);
 
