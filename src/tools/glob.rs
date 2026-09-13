@@ -146,231 +146,273 @@ mod tests {
     use super::*;
 
     use anyhow::Result;
+    use std::{
+        io::Write,
+        time::{Duration, SystemTime},
+    };
+
+    fn execute_glob_with_times(files: &[(&str, u64)], params: GlobParams) -> Result<String> {
+        let (_tempdir, data) = setup_test_fs()?;
+        let now = SystemTime::now();
+
+        for (file_path, time_offset) in files {
+            let path = Path::new(file_path);
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                let _ = data.dirs[0].dir.create_dir_all(parent);
+            }
+
+            let mut file = data.dirs[0].dir.create(file_path)?;
+
+            file.write_all("content".as_bytes())?;
+
+            file.into_std()
+                .set_modified(now + Duration::from_secs(*time_offset))?;
+        }
+
+        Filesystem::try_glob(data.clone(), Parameters(params))
+    }
+
+    fn execute_glob(files: &[&str], params: GlobParams) -> Result<String> {
+        let files_with_times: Vec<(&str, u64)> = files
+            .iter()
+            .enumerate()
+            .map(|(i, &path)| (path, i as u64))
+            .collect();
+
+        execute_glob_with_times(&files_with_times, params)
+    }
+
+    fn default_glob_params(pattern: &str) -> GlobParams {
+        GlobParams {
+            pattern: pattern.to_string(),
+            path: None,
+            limit: None,
+            offset: None,
+        }
+    }
+
+    fn run_pagination_test(
+        files: &[&str],
+        pattern: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<String> {
+        let mut params = default_glob_params(pattern);
+        params.limit = limit;
+        params.offset = offset;
+
+        execute_glob(files, params)
+    }
+
+    const FILES_3: &[&str] = &["a.txt", "b.txt", "c.txt"];
+    const FILES_5: &[&str] = &["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
 
     #[test]
-    fn test_glob_single_match() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "content")?;
-        data.dirs[0].dir.write("b.rs", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "*.txt".to_string(),
-                path: None,
-                limit: None,
-                offset: None,
-            }),
+    fn test_glob_sorting_by_modified_time() -> Result<()> {
+        let result = execute_glob_with_times(
+            &[("a.txt", 10), ("b.txt", 2), ("c.txt", 5)],
+            default_glob_params("*.txt"),
         )?;
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\na.txt\n"
+            "Showing 3 result(s) (out of 3 found in total):\na.txt\nc.txt\nb.txt\n"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_single_match() -> Result<()> {
+        let result = execute_glob(&["a.txt", "b.rs"], default_glob_params("*.txt"))?;
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 1 found in total):\na.txt\n"
+        );
         Ok(())
     }
 
     #[test]
     fn test_glob_multiple_matches() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "content")?;
-        data.dirs[0].dir.write("b.txt", "content")?;
-        data.dirs[0].dir.write("c.rs", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "*.txt".to_string(),
-                path: None,
-                limit: None,
-                offset: None,
-            }),
-        )?;
-
+        let result = execute_glob(&["a.txt", "b.txt", "c.rs"], default_glob_params("*.txt"))?;
         assert_eq!(
             result,
             "Showing 2 result(s) (out of 2 found in total):\nb.txt\na.txt\n"
         );
-
         Ok(())
     }
 
     #[test]
     fn test_glob_no_results() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "*.cs".to_string(),
-                path: None,
-                limit: None,
-                offset: None,
-            }),
-        )?;
-
+        let result = execute_glob(&["a.txt"], default_glob_params("*.cs"))?;
         assert_eq!(
             result,
             "No results found regardless of the specified offset"
         );
-
         Ok(())
     }
 
     #[test]
-    fn test_glob_subdirectory_match() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.create_dir("subdir")?;
-        data.dirs[0].dir.write("a.txt", "content")?;
-        data.dirs[0].dir.write("subdir/b.txt", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "*.txt".to_string(),
-                path: None,
-                limit: None,
-                offset: None,
-            }),
+    fn test_glob_brace_expansion() -> Result<()> {
+        let result = execute_glob(
+            &["a.ts", "b.tsx", "c.js"],
+            default_glob_params("*.{ts,tsx}"),
         )?;
-
         assert_eq!(
             result,
-            "Showing 2 result(s) (out of 2 found in total):\nsubdir/b.txt\na.txt\n"
+            "Showing 2 result(s) (out of 2 found in total):\nb.tsx\na.ts\n"
         );
-
         Ok(())
     }
 
     #[test]
-    fn test_glob_with_limit() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "content")?;
-        data.dirs[0].dir.write("b.txt", "content")?;
-        data.dirs[0].dir.write("c.txt", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "*.txt".to_string(),
-                path: None,
-                limit: Some(1),
-                offset: None,
-            }),
+    fn test_glob_recursive_by_default() -> Result<()> {
+        let result = execute_glob(
+            &["a.txt", "subdir/b.txt", "subdir/nested/c.txt"],
+            default_glob_params("*.txt"),
         )?;
-
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 3 found in total):\nc.txt\n"
+            format!(
+                "Showing 3 result(s) (out of 3 found in total):\nsubdir{}nested{}c.txt\nsubdir{}b.txt\na.txt\n",
+                std::path::MAIN_SEPARATOR,
+                std::path::MAIN_SEPARATOR,
+                std::path::MAIN_SEPARATOR
+            )
         );
-
         Ok(())
     }
 
     #[test]
-    fn test_glob_with_offset() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "content")?;
-        data.dirs[0].dir.write("b.txt", "content")?;
-        data.dirs[0].dir.write("c.txt", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "*.txt".to_string(),
-                path: None,
-                limit: None,
-                offset: Some(1),
-            }),
-        )?;
-
+    fn test_glob_top_level_only() -> Result<()> {
+        let result = execute_glob(&["a.txt", "subdir/b.txt"], default_glob_params("/*.txt"))?;
         assert_eq!(
             result,
-            "Showing 2 result(s) (out of 3 found in total):\nb.txt\na.txt\n"
+            "Showing 1 result(s) (out of 1 found in total):\na.txt\n"
         );
-
         Ok(())
     }
 
     #[test]
-    fn test_glob_offset_past_results() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
+    fn test_glob_with_path_parameter() -> Result<()> {
+        let mut params = default_glob_params("*.txt");
+        params.path = Some("subdir".to_string());
 
-        data.dirs[0].dir.write("a.txt", "content")?;
-        data.dirs[0].dir.write("b.txt", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "*.txt".to_string(),
-                path: None,
-                limit: None,
-                offset: Some(5),
-            }),
-        )?;
-
-        assert_eq!(
-            result,
-            "No results found at the specified offset (found 2 in total)"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_glob_with_path() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.create_dir("subdir")?;
-        data.dirs[0].dir.write("other.txt", "content")?;
-        data.dirs[0].dir.write("subdir/a.txt", "content")?;
-        data.dirs[0].dir.write("subdir/b.txt", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "*.txt".to_string(),
-                path: Some("subdir".to_string()),
-                limit: None,
-                offset: None,
-            }),
-        )?;
+        let result = execute_glob(&["other.txt", "subdir/a.txt", "subdir/b.txt"], params)?;
 
         assert_eq!(
             result,
             "Showing 2 result(s) (out of 2 found in total):\nb.txt\na.txt\n"
         );
-
         Ok(())
     }
 
     #[test]
     fn test_glob_invalid_pattern() -> Result<()> {
-        let (_tempdir, data) = setup_test_fs()?;
-
-        data.dirs[0].dir.write("a.txt", "content")?;
-
-        let result = Filesystem::try_glob(
-            data.clone(),
-            Parameters(GlobParams {
-                pattern: "[invalid".to_string(),
-                path: None,
-                limit: None,
-                offset: None,
-            }),
-        );
-
+        let result = execute_glob(&["a.txt"], default_glob_params("[invalid"));
         assert_eq!(
             result.err().map(|e| e.to_string()),
             Some("Invalid glob pattern".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_limit_1() -> Result<()> {
+        let result = run_pagination_test(FILES_3, "*.txt", Some(1), None)?;
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 3 found in total):\nc.txt\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_limit_2() -> Result<()> {
+        let result = run_pagination_test(FILES_3, "*.txt", Some(2), None)?;
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 3 found in total):\nc.txt\nb.txt\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_limit_0() -> Result<()> {
+        let result = run_pagination_test(FILES_3, "*.txt", Some(0), None)?;
+        assert_eq!(
+            result,
+            "No results found at the specified offset (found 3 in total)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_offset_0_explicit() -> Result<()> {
+        let result = run_pagination_test(FILES_3, "*.txt", None, Some(0))?;
+        assert_eq!(
+            result,
+            "Showing 3 result(s) (out of 3 found in total):\nc.txt\nb.txt\na.txt\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_offset_1() -> Result<()> {
+        let result = run_pagination_test(FILES_3, "*.txt", None, Some(1))?;
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 3 found in total):\nb.txt\na.txt\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_offset_past_results() -> Result<()> {
+        let result = run_pagination_test(FILES_3, "*.txt", None, Some(5))?;
+        assert_eq!(
+            result,
+            "No results found at the specified offset (found 3 in total)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_offset_equals_total() -> Result<()> {
+        let result = run_pagination_test(FILES_3, "*.txt", None, Some(3))?;
+        assert_eq!(
+            result,
+            "No results found at the specified offset (found 3 in total)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_limit_and_offset_pagination() -> Result<()> {
+        let page1 = run_pagination_test(FILES_5, "*.txt", Some(2), Some(0))?;
+        assert_eq!(
+            page1,
+            "Showing 2 result(s) (out of 5 found in total):\ne.txt\nd.txt\n"
+        );
+
+        let page2 = run_pagination_test(FILES_5, "*.txt", Some(2), Some(2))?;
+        assert_eq!(
+            page2,
+            "Showing 2 result(s) (out of 5 found in total):\nc.txt\nb.txt\n"
+        );
+
+        let page3 = run_pagination_test(FILES_5, "*.txt", Some(2), Some(4))?;
+        assert_eq!(
+            page3,
+            "Showing 1 result(s) (out of 5 found in total):\na.txt\n"
+        );
+
+        let page4 = run_pagination_test(FILES_5, "*.txt", Some(2), Some(5))?;
+        assert_eq!(
+            page4,
+            "No results found at the specified offset (found 5 in total)"
         );
 
         Ok(())
