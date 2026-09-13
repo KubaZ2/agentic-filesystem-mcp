@@ -542,6 +542,28 @@ mod tests {
     }
 
     #[test]
+    fn test_glob_invalid_gitignore_line_ignored() -> Result<()> {
+        let result = execute_glob_with_content(
+            &[
+                ("a/visible.txt", "content"),
+                ("b/ignored.txt", "content"),
+                (".gitignore", "[z-a]\nb/"),
+            ],
+            default_glob_params("*.txt"),
+        )?;
+
+        assert_eq!(
+            result,
+            format!(
+                "Showing 1 result(s) (out of 1 found in total):\na{}visible.txt\n",
+                std::path::MAIN_SEPARATOR,
+            )
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_glob_trailing_slash_means_directory() -> Result<()> {
         let result = execute_glob(&["a/a", "b"], default_glob_params("/*/"))?;
 

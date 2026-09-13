@@ -1084,6 +1084,30 @@ mod tests {
     }
 
     #[test]
+    fn test_glob_invalid_gitignore_line_ignored() -> Result<()> {
+        let mut params = default_grep_params("hello");
+        params.glob = Some("*.txt".to_string());
+        let result = execute_grep(
+            &[
+                ("a/visible.txt", "hello"),
+                ("b/ignored.txt", "hello"),
+                (".gitignore", "[z-a]\nb/"),
+            ],
+            params,
+        )?;
+
+        assert_eq!(
+            result,
+            format!(
+                "Showing 1 result(s) (out of 1 found in total):\na{}visible.txt:1:hello\n",
+                std::path::MAIN_SEPARATOR,
+            )
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_grep_trailing_slash_means_directory() -> Result<()> {
         let mut params = default_grep_params("hello");
         params.glob = Some("/*/".to_string());
