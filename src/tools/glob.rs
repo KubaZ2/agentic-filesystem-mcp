@@ -131,10 +131,248 @@ impl Filesystem {
         );
 
         for Reverse((_, path)) in &results.into_sorted_vec()[offset..] {
-            response.push_str(&path);
+            response.push_str(path);
             response.push('\n');
         }
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tools::test_utils::setup_test_fs;
+
+    use super::*;
+
+    use anyhow::Result;
+
+    #[test]
+    fn test_glob_single_match() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.write("a.txt", "content")?;
+        data.dirs[0].dir.write("b.rs", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "*.txt".to_string(),
+                path: None,
+                limit: None,
+                offset: None,
+            }),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 1 found in total):\na.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_multiple_matches() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.write("a.txt", "content")?;
+        data.dirs[0].dir.write("b.txt", "content")?;
+        data.dirs[0].dir.write("c.rs", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "*.txt".to_string(),
+                path: None,
+                limit: None,
+                offset: None,
+            }),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 2 found in total):\nb.txt\na.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_no_results() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.write("a.txt", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "*.cs".to_string(),
+                path: None,
+                limit: None,
+                offset: None,
+            }),
+        )?;
+
+        assert_eq!(
+            result,
+            "No results found regardless of the specified offset"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_subdirectory_match() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.create_dir("subdir")?;
+        data.dirs[0].dir.write("a.txt", "content")?;
+        data.dirs[0].dir.write("subdir/b.txt", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "*.txt".to_string(),
+                path: None,
+                limit: None,
+                offset: None,
+            }),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 2 found in total):\nsubdir/b.txt\na.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_with_limit() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.write("a.txt", "content")?;
+        data.dirs[0].dir.write("b.txt", "content")?;
+        data.dirs[0].dir.write("c.txt", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "*.txt".to_string(),
+                path: None,
+                limit: Some(1),
+                offset: None,
+            }),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 1 result(s) (out of 3 found in total):\nc.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_with_offset() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.write("a.txt", "content")?;
+        data.dirs[0].dir.write("b.txt", "content")?;
+        data.dirs[0].dir.write("c.txt", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "*.txt".to_string(),
+                path: None,
+                limit: None,
+                offset: Some(1),
+            }),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 3 found in total):\nb.txt\na.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_offset_past_results() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.write("a.txt", "content")?;
+        data.dirs[0].dir.write("b.txt", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "*.txt".to_string(),
+                path: None,
+                limit: None,
+                offset: Some(5),
+            }),
+        )?;
+
+        assert_eq!(
+            result,
+            "No results found at the specified offset (found 2 in total)"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_with_path() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.create_dir("subdir")?;
+        data.dirs[0].dir.write("other.txt", "content")?;
+        data.dirs[0].dir.write("subdir/a.txt", "content")?;
+        data.dirs[0].dir.write("subdir/b.txt", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "*.txt".to_string(),
+                path: Some("subdir".to_string()),
+                limit: None,
+                offset: None,
+            }),
+        )?;
+
+        assert_eq!(
+            result,
+            "Showing 2 result(s) (out of 2 found in total):\nb.txt\na.txt\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_glob_invalid_pattern() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        data.dirs[0].dir.write("a.txt", "content")?;
+
+        let result = Filesystem::try_glob(
+            data.clone(),
+            Parameters(GlobParams {
+                pattern: "[invalid".to_string(),
+                path: None,
+                limit: None,
+                offset: None,
+            }),
+        );
+
+        assert_eq!(
+            result.err().map(|e| e.to_string()),
+            Some("Invalid glob pattern".to_string())
+        );
+
+        Ok(())
     }
 }
