@@ -1038,8 +1038,10 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 3 result(s) (out of 3 found in total):\n.gitignore:2:hello\nignored_dir/file.txt:1:hello\nvisible.txt:1:hello
-"
+            format!(
+                "Showing 3 result(s) (out of 3 found in total):\n.gitignore:2:hello\nignored_dir{}file.txt:1:hello\nvisible.txt:1:hello\n",
+                std::path::MAIN_SEPARATOR,
+            )
         );
 
         Ok(())

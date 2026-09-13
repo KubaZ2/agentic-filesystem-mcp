@@ -501,7 +501,10 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 4 result(s) (out of 4 found in total):\n.gitignore\nignored_dir/file.txt\nignored_dir\nvisible.txt\n"
+            format!(
+                "Showing 4 result(s) (out of 4 found in total):\n.gitignore\nignored_dir{}file.txt\nignored_dir\nvisible.txt\n",
+                std::path::MAIN_SEPARATOR,
+            )
         );
 
         Ok(())
