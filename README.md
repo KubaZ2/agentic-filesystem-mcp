@@ -6,7 +6,7 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 
 ## 🔑 Key Features
 
-* **Secure by Default:** Uses `cap_std` to sandbox all filesystem access. Agents cannot traverse outside the explicitly provided root directories, preventing path traversal vulnerabilities.
+* **Secure by Default:** Uses `[cap-std](https://github.com/bytecodealliance/cap-std)` to sandbox all filesystem access. Agents cannot traverse outside the explicitly provided root directories, preventing path traversal vulnerabilities.
 * **LLM-Optimized:** Features like pagination (`limit`/`offset`), exact string replacement (`edit`), and line numbering prevent context window overflow when working with large files or directories.
 * **Smart Searching:** Both `grep` and `glob` tools natively respect `.gitignore` files and hidden directories.
 * **Media Support:** The `read` tool intelligently handles binary files, returning images (`png`, `jpg`, `svg`, etc.) and audio (`mp3`, `wav`, etc.) directly.
@@ -23,7 +23,7 @@ Start the server by providing one or more root directories you want the agent to
 agentic-filesystem-mcp [OPTIONS]
 ```
 
-**Arguments:**
+**Options:**
 
 * `--root <PATHS>...`: The root paths the server will serve and sandbox, required.
 
