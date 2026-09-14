@@ -4,12 +4,12 @@
 
 Built with security and AI-context limits in mind, it utilizes capability-based security (`cap_std`) to strictly sandbox operations to allowed directories and includes built-in pagination, line-numbering, and search features to optimize LLM token usage.
 
-## 🚀 Key Features
+## 🔑 Key Features
 
 * **Secure by Default:** Uses `cap_std` to sandbox all filesystem access. Agents cannot traverse outside the explicitly provided root directories, preventing path traversal vulnerabilities.
 * **LLM-Optimized:** Features like pagination (`limit`/`offset`), exact string replacement (`edit`), and line numbering prevent context window overflow when working with large files or directories.
 * **Smart Searching:** Includes a `grep` tool powered by Rust's `grep` crate (the engine behind ripgrep) and a `glob` tool. Both natively respect `.gitignore` files and hidden directories.
-* **Media Support:** The `read` tool intelligently handles binary files, returning images (`.png`, `.jpg`, `.svg`, etc.) and audio (`.mp3`, `.wav`, etc.) directly as base64-encoded MCP `ContentBlock`s.
+* **Media Support:** The `read` tool intelligently handles binary files, returning images (`png`, `jpg`, `svg`, etc.) and audio (`mp3`, `wav`, etc.) directly.
 
 ## 📦 Installation
 
@@ -25,9 +25,7 @@ agentic-filesystem-mcp [OPTIONS]
 
 **Arguments:**
 
-* `--root <PATHS>...`: The root paths the server will serve and sandbox.
-
-**Options:**
+* `--root <PATHS>...`: The root paths the server will serve and sandbox, required.
 
 * `--absolute-paths`: By default, the server determines a common root and uses relative paths. Flag this to force the use of absolute paths instead.
 
@@ -38,45 +36,97 @@ agentic-filesystem-mcp --root /path/to/project
 ```
 
 ```bash
+agentic-filesystem-mcp --absolute-paths --root /path/to/project
+```
+
+```bash
 agentic-filesystem-mcp --root /path/to/project/src /path/to/project/docs
 ```
 
-## 🧰 Available Tools
+### Tools
 
-The server exposes the following tools to the connected MCP client:
+- **read**
+  - Reads the contents of a file. Supports text files and media files (images and audio)
+  - Inputs:
+    - `path` (string): File location
+    - `limit` (number, optional, default: 100): Maximum number of lines to read, for text files
+    - `offset` (number, optional, default: 0): Number of lines to skip before reading, for text files
+    - `show_line_numbers` (boolean, optional, default: true): Whether to prepend 1-indexed line numbers, for text files
 
-### File Content Operations
+- **write**
+  - Creates new file or overwrites existing
+  - Inputs:
+    - `path` (string): File location
+    - `content` (string): The complete content to write to the file
+  - Auto-creates parent directories — any missing intermediate directories in the path are created
 
-* **`read`**: Reads file contents.<br>
-  *Text files:* Supports pagination (`limit`, `offset`) and toggling `show_line_numbers`.<br>
-  *Media files:* Automatically detects media extensions and returns image/audio blocks.
+- **edit**
+  - Make selective edits using exact string replacement
+  - Inputs:
+    - `path` (string): File location
+    - `old_string` (string): Text to search for (must match exactly including whitespace)
+    - `new_string` (string): Text to replace with
+    - `replace_all` (boolean, optional, default: false): Whether to replace all occurrences
+  - If `replace_all` is `false`/omitted and `old_string` matches more than once, the tool fails without making any changes
 
-* **`write`**: Completely overwrites a file with new content. Automatically creates any missing parent directories.
+- **grep**
+  - Search file contents using regular expressions
+  - Inputs:
+    - `pattern` (string): The regex pattern to search for
+    - `path` (string, optional, default: "."): Directory or file to search in
+    - `glob` (string, optional): Glob pattern to filter files (e.g., `*.{ts,tsx}`)
+    - `output_mode` (string, optional, default: "content"): One of "content", "files_with_matches", "count"
+    - `before_context` (number, optional, default: 0): Lines before each match (requires output_mode=content)
+    - `after_context` (number, optional, default: 0): Lines after each match (requires output_mode=content)
+    - `limit` (number, optional, default: 100): Maximum number of files to return
+    - `offset` (number, optional, default: 0): Number of files to skip
+    - `multiline` (boolean, optional, default: false): Enable multiline mode
+    - `show_line_numbers` (boolean, optional, default: true): Show line numbers (requires output_mode=content)
+  - Results are ordered by file modification time
+  - Natively respects `.gitignore` rules and hidden files/directories
+  - Binary files are skipped
 
-* **`edit`**: Performs exact string replacement in a file.<br>
-  *Features:* Takes `old_string` and `new_string`. Safer and more token-efficient than rewriting entire files. Supports `replace_all` to replace every instance, or fails safely if multiple matches are found and `replace_all` is false.
+- **glob**
+  - Search for files or directories matching a glob pattern
+  - Inputs:
+    - `pattern` (string): Glob pattern to match
+    - `path` (string, optional, default: "."): Directory to search in
+    - `limit` (number, optional, default: 100): Maximum number of results
+    - `offset` (number, optional, default: 0): Number of results to skip
+  - Results are sorted by modification time
+  - Natively respects `.gitignore` rules and hidden files/directories
 
-### Search Operations
+- **mkdir**
+  - Create new directory or ensure it exists
+  - Inputs:
+    - `path` (string): Directory location
+    - `parents` (boolean, optional, default: false): Create parent directories as needed (equivalent to `mkdir -p`). If `true`, no error is returned if the directory already exists
 
-* **`grep`**: Fast regex search within file contents.<br>
-  *Features:* Supports context lines (`before_context`, `after_context`), `multiline` matching, filtering by `glob`, pagination, `show_line_numbers`, and different output modes (`content`, `files_with_matches`, `count`). Natively respects `.gitignore` rules and hidden files/directories.
+- **move**
+  - Move or rename files and directories
+  - Inputs:
+    - `src_path` (string): Source path
+    - `dst_path` (string): Destination path (must include the target file/directory name, not just the destination folder)
+  - Overwrites an existing destination of the same name if it exists
 
-* **`glob`**: Searches for files or directories matching a glob pattern (e.g., `src/**/*.rs`).<br>
-  *Features:* Returns results sorted by modification time. Natively respects `.gitignore` rules and hidden files/directories. Supports pagination to handle massive directories.
+- **copy**
+  - Copy a file or directory to a new location
+  - Inputs:
+    - `src_path` (string): Source path
+    - `dst_path` (string): Destination path (must include the target file/directory name, not just the destination folder)
+    - `recursive` (boolean, optional, default: false): MUST be set to `true` when copying a directory, otherwise the operation will fail
+  - Fails if the destination path already exists
+  - File copies preserve the source file's permissions
+  - Recursive copies preserve the directory tree, file and directory permissions, and symlinks
 
-### Filesystem Management
+- **remove**
+  - Remove a file or directory
+  - Inputs:
+    - `path` (string): Path to the file or directory to remove
+    - `recursive` (boolean, optional, default: false): MUST be set to `true` to remove a non-empty directory
 
-* **`mkdir`**: Creates a new directory. Supports a `parents` flag (equivalent to `mkdir -p`) to create nested structures in one go.
-
-* **`move`**: Renames or moves a file or directory. Will overwrite the destination if it already exists.
-
-* **`copy`**: Copies a file or directory.<br>
-  *Features:* Requires the `recursive` flag to be true when copying directories. Will safely fail if the destination already exists.
-
-* **`remove`**: Permanently deletes a file or directory. Requires the `recursive` flag to be set to true to remove non-empty directories.
-
-## 🛡️ Security Architecture
+## 🔐 Security Architecture
 
 This server relies heavily on `cap_std::fs::Dir`. When root paths are passed to the server, it opens them as "ambient directories". All subsequent tool executions are mapped to these capability objects.
 
-If an agent attempts to access `/etc/passwd` or `../../../../ssh/id_rsa` while the server was restricted to `./my_project`, the operation will instantly fail at the OS/capability level. Symlinks are safely evaluated and resolved relative by the sandbox.
+If an agent attempts to access `/etc/passwd` or `../../../../ssh/id_rsa` while the server was restricted to `./my_project`, the operation will fail at the sandbox level. Symlinks are safely evaluated and resolved relative by the sandbox.
