@@ -39,7 +39,7 @@ agentic-filesystem-mcp --root /path/to/project
 ```
 
 ```bash
-agentic-filesystem-mcp --root /path/to/project/src --root /path/to/project/docs
+agentic-filesystem-mcp --root /path/to/project/src /path/to/project/docs
 ```
 
 ## 🧰 Available Tools
