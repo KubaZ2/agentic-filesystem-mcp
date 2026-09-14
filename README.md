@@ -47,10 +47,8 @@ The server exposes the following tools to the connected MCP client:
 
 ### File Content Operations
 
-* **`read`**: Reads file contents.
-
-  *Text files:* Supports pagination (`limit`, `offset`) and toggling `show_line_numbers`.
-
+* **`read`**: Reads file contents.<br>
+  *Text files:* Supports pagination (`limit`, `offset`) and toggling `show_line_numbers`.<br>
   *Media files:* Automatically detects media extensions and returns image/audio blocks.
 
 * **`write`**: Completely overwrites a file with new content. Automatically creates any missing parent directories.
@@ -61,12 +59,10 @@ The server exposes the following tools to the connected MCP client:
 
 ### Search Operations
 
-* **`grep`**: Fast regex search within file contents.
-
+* **`grep`**: Fast regex search within file contents.<br>
   *Features:* Supports context lines (`before_context`, `after_context`), `multiline` matching, filtering by `glob`, pagination, `show_line_numbers`, and different output modes (`content`, `files_with_matches`, `count`). Natively respects `.gitignore` rules and hidden files/directories.
 
-* **`glob`**: Searches for files or directories matching a glob pattern (e.g., `src/**/*.rs`).
-
+* **`glob`**: Searches for files or directories matching a glob pattern (e.g., `src/**/*.rs`).<br>
   *Features:* Returns results sorted by modification time. Natively respects `.gitignore` rules and hidden files/directories. Supports pagination to handle massive directories.
 
 ### Filesystem Management
@@ -75,8 +71,7 @@ The server exposes the following tools to the connected MCP client:
 
 * **`move`**: Renames or moves a file or directory. Will overwrite the destination if it already exists.
 
-* **`copy`**: Copies a file or directory.
-
+* **`copy`**: Copies a file or directory.<br>
   *Features:* Requires the `recursive` flag to be true when copying directories. Will safely fail if the destination already exists.
 
 * **`remove`**: Permanently deletes a file or directory. Requires the `recursive` flag to be set to true to remove non-empty directories.
