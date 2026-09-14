@@ -13,7 +13,7 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 
 ## 📦 Installation
 
-Download the latest release from [GitHub](https://github.com/KubaZ2/agentic-filesystem-mcp/releases/latest).
+Download the latest release from [Releases](https://github.com/KubaZ2/agentic-filesystem-mcp/releases/latest).
 
 ## 🛠️ Usage
 
@@ -21,7 +21,6 @@ Start the server by providing one or more root directories you want the agent to
 
 ```bash
 agentic-filesystem-mcp [OPTIONS]
-
 ```
 
 **Arguments:**
