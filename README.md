@@ -2,7 +2,7 @@
 
 **Agentic Filesystem MCP** is a secure, highly capable Model Context Protocol (MCP) server written in Rust. It exposes a comprehensive suite of filesystem operations as tools for AI agents.
 
-Built with security and AI-context limits in mind, it utilizes capability-based security (`cap_std`) to strictly sandbox operations to allowed directories and includes built-in pagination, line-numbering, and search features to optimize LLM token usage.
+Built with security and AI-context limits in mind, it utilizes capability-based security to strictly sandbox operations to allowed directories and includes built-in pagination, line-numbering, and search features to optimize LLM token usage.
 
 ## 🔑 Key Features
 
