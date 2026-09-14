@@ -4,8 +4,6 @@
 
 Built with security and AI-context limits in mind, it utilizes capability-based security (`cap_std`) to strictly sandbox operations to allowed directories and includes built-in pagination, line-numbering, and search features to optimize LLM token usage.
 
----
-
 ## 🚀 Key Features
 
 * **Secure by Default:** Uses `cap_std` to sandbox all filesystem access. Agents cannot traverse outside the explicitly provided root directories, preventing path traversal vulnerabilities.
@@ -13,13 +11,9 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 * **Smart Searching:** Includes a `grep` tool powered by Rust's `grep` crate (the engine behind ripgrep) and a `glob` tool. Both natively respect `.gitignore` files and hidden directories.
 * **Media Support:** The `read` tool intelligently handles binary files, returning images (`.png`, `.jpg`, `.svg`, etc.) and audio (`.mp3`, `.wav`, etc.) directly as base64-encoded MCP `ContentBlock`s.
 
----
-
 ## 📦 Installation
 
 Download the latest release from [GitHub](https://github.com/KubaZ2/agentic-filesystem-mcp/releases/latest).
-
----
 
 ## 🛠️ Usage
 
@@ -47,8 +41,6 @@ agentic-filesystem-mcp --root /path/to/project
 ```bash
 agentic-filesystem-mcp --root /path/to/project/src --root /path/to/project/docs
 ```
-
----
 
 ## 🧰 Available Tools
 
@@ -80,8 +72,6 @@ The server exposes the following tools to the connected MCP client:
 * *Features:* Requires the `recursive` flag to be true when copying directories. Will safely fail if the destination already exists.
 
 * **`remove`**: Permanently deletes a file or directory. Requires the `recursive` flag to be set to true to remove non-empty directories.
-
----
 
 ## 🛡️ Security Architecture
 
