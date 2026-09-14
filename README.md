@@ -58,7 +58,7 @@ The server exposes the following tools to the connected MCP client:
 ### Search Operations
 
 * **`grep`**: Fast regex search within file contents.
-* *Features:* Supports context lines (`before_context`, `after_context`), `multiline` matching, filtering by `glob`, pagination, and different output modes (`content`, `files_with_matches`, `count`). Natively respects `.gitignore` rules and hidden files/directories.
+* *Features:* Supports context lines (`before_context`, `after_context`), `multiline` matching, filtering by `glob`, pagination, `show_line_numbers`, and different output modes (`content`, `files_with_matches`, `count`). Natively respects `.gitignore` rules and hidden files/directories.
 
 * **`glob`**: Searches for files or directories matching a glob pattern (e.g., `src/**/*.rs`).
 * *Features:* Returns results sorted by modification time. Natively respects `.gitignore` rules and hidden files/directories. Supports pagination to handle massive directories.
