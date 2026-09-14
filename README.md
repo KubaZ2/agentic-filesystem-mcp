@@ -53,8 +53,7 @@ The server exposes the following tools to the connected MCP client:
 
 * **`write`**: Completely overwrites a file with new content. Automatically creates any missing parent directories.
 
-* **`edit`**: Performs exact string replacement in a file.
-
+* **`edit`**: Performs exact string replacement in a file.<br>
   *Features:* Takes `old_string` and `new_string`. Safer and more token-efficient than rewriting entire files. Supports `replace_all` to replace every instance, or fails safely if multiple matches are found and `replace_all` is false.
 
 ### Search Operations
