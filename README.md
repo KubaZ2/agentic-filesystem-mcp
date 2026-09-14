@@ -8,7 +8,7 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 
 * **Secure by Default:** Uses `cap_std` to sandbox all filesystem access. Agents cannot traverse outside the explicitly provided root directories, preventing path traversal vulnerabilities.
 * **LLM-Optimized:** Features like pagination (`limit`/`offset`), exact string replacement (`edit`), and line numbering prevent context window overflow when working with large files or directories.
-* **Smart Searching:** Includes a `grep` tool powered by Rust's `grep` crate (the engine behind ripgrep) and a `glob` tool. Both natively respect `.gitignore` files and hidden directories.
+* **Smart Searching:** Both `grep` and `glob` tools natively respect `.gitignore` files and hidden directories.
 * **Media Support:** The `read` tool intelligently handles binary files, returning images (`png`, `jpg`, `svg`, etc.) and audio (`mp3`, `wav`, etc.) directly.
 
 ## 📦 Installation
@@ -89,7 +89,7 @@ agentic-filesystem-mcp --root /path/to/project/src /path/to/project/docs
 - **glob**
   - Search for files or directories matching a glob pattern
   - Inputs:
-    - `pattern` (string): Glob pattern to match
+    - `pattern` (string): Glob pattern to match (e.g., `*.{ts,tsx}`)
     - `path` (string, optional, default: "."): Directory to search in
     - `limit` (number, optional, default: 100): Maximum number of results
     - `offset` (number, optional, default: 0): Number of results to skip
@@ -130,3 +130,7 @@ agentic-filesystem-mcp --root /path/to/project/src /path/to/project/docs
 This server relies heavily on `cap_std::fs::Dir`. When root paths are passed to the server, it opens them as "ambient directories". All subsequent tool executions are mapped to these capability objects.
 
 If an agent attempts to access `/etc/passwd` or `../../../../ssh/id_rsa` while the server was restricted to `./my_project`, the operation will fail at the sandbox level. Symlinks are safely evaluated and resolved relative by the sandbox.
+
+## 📜 License
+
+This project is released under the [MIT License](LICENSE).
