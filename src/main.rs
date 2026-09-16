@@ -267,94 +267,68 @@ impl Filesystem {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//
-//     fn get_empty_path() -> PathBuf {
-//         #[cfg(windows)]
-//         {
-//             PathBuf::from("C:\\")
-//         }
-//
-//         #[cfg(not(windows))]
-//         {
-//             PathBuf::from("/")
-//         }
-//     }
-//
-//     #[test]
-//     fn test_get_dirs() -> Result<()> {
-//         let tempdir = tempfile::tempdir()?;
-//
-//         let root_path = tempdir.path();
-//
-//         std::fs::create_dir_all(root_path.join("dir_a/dir_b"))?;
-//         std::fs::create_dir_all(root_path.join("dir_c"))?;
-//
-//         let abs_paths = vec![
-//             root_path.join("dir_a/dir_b"),
-//             root_path.join("dir_a"),
-//             root_path.join("dir_c"),
-//         ];
-//
-//         let dirs = get_dirs(&abs_paths, Some(root_path))?;
-//
-//         assert_eq!(dirs.len(), 3);
-//         assert_eq!(dirs[0].path, PathBuf::from("dir_a/dir_b"));
-//         assert!(dirs[1].path == *"dir_a" || dirs[1].path == *"dir_c");
-//         assert!(dirs[2].path == *"dir_a" || dirs[2].path == *"dir_c");
-//         assert_ne!(dirs[1].path, dirs[2].path);
-//
-//         Ok(())
-//     }
-//
-//     #[test]
-//     fn test_get_root_path_empty_root() -> Result<()> {
-//         let root_path = get_empty_path();
-//
-//         let abs_paths = vec![
-//             root_path.join("dir_a/dir_b"),
-//             root_path.join("dir_a"),
-//             root_path.join("dir_c"),
-//         ];
-//
-//         let root = get_root_path(&abs_paths)?;
-//
-//         assert_eq!(root, Some(root_path.to_path_buf()));
-//
-//         Ok(())
-//     }
-//
-//     #[test]
-//     fn test_get_root_path_nested_root() -> Result<()> {
-//         let root_path = get_empty_path();
-//
-//         let abs_paths = vec![
-//             root_path.join("some/nested/dir/dir_a/dir_b"),
-//             root_path.join("some/nested/dir/dir_a"),
-//             root_path.join("some/nested/dir/dir_c"),
-//         ];
-//
-//         let root = get_root_path(&abs_paths)?;
-//
-//         assert_eq!(root, Some(root_path.join("some/nested/dir")));
-//
-//         Ok(())
-//     }
-//
-//     #[cfg(windows)]
-//     #[test]
-//     fn test_get_root_path_no_common_root() -> Result<()> {
-//         let path_a = PathBuf::from("C:\\dir_a\\dir_b");
-//         let path_b = PathBuf::from("D:\\dir_c");
-//
-//         let abs_paths = vec![path_a, path_b];
-//
-//         let root = get_root_path(&abs_paths)?;
-//
-//         assert_eq!(root, None);
-//
-//         Ok(())
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn get_empty_path() -> PathBuf {
+        #[cfg(windows)]
+        {
+            PathBuf::from("C:\\")
+        }
+
+        #[cfg(not(windows))]
+        {
+            PathBuf::from("/")
+        }
+    }
+
+    #[test]
+    fn test_get_root_path_empty_root() -> Result<()> {
+        let root_path = get_empty_path();
+
+        let abs_paths = vec![
+            root_path.join("dir_a/dir_b"),
+            root_path.join("dir_a"),
+            root_path.join("dir_c"),
+        ];
+
+        let root = get_root_path(&abs_paths)?;
+
+        assert_eq!(root, Some(root_path.to_path_buf()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_root_path_nested_root() -> Result<()> {
+        let root_path = get_empty_path();
+
+        let abs_paths = vec![
+            root_path.join("some/nested/dir/dir_a/dir_b"),
+            root_path.join("some/nested/dir/dir_a"),
+            root_path.join("some/nested/dir/dir_c"),
+        ];
+
+        let root = get_root_path(&abs_paths)?;
+
+        assert_eq!(root, Some(root_path.join("some/nested/dir")));
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_get_root_path_no_common_root() -> Result<()> {
+        let path_a = PathBuf::from("C:\\dir_a\\dir_b");
+        let path_b = PathBuf::from("D:\\dir_c");
+
+        let abs_paths = vec![path_a, path_b];
+
+        let root = get_root_path(&abs_paths)?;
+
+        assert_eq!(root, None);
+
+        Ok(())
+    }
+}
