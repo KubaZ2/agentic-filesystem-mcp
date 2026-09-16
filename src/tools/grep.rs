@@ -11,7 +11,10 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData, GrepPrinter, cap_ignore_walker::RunEntry};
+use crate::{
+    Filesystem, FilesystemData, GrepPrinter,
+    walk::{self, RunEntry},
+};
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -154,7 +157,7 @@ impl Filesystem {
 
         let mut results = BinaryHeap::new();
 
-        crate::cap_ignore_walker::run(&overrides, &data.dir, maybe_empty_path, |entry| {
+        walk::run(&overrides, &data.dir, maybe_empty_path, |entry| {
             let (entry, entry_path) = match entry {
                 RunEntry::Match(entry, path) => (entry, path),
                 RunEntry::Error(err) => {

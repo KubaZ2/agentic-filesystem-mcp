@@ -6,7 +6,10 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData, cap_ignore_walker::RunEntry};
+use crate::{
+    Filesystem, FilesystemData,
+    walk::{self, RunEntry},
+};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct GlobParams {
@@ -60,8 +63,6 @@ impl Filesystem {
             .build()
             .context("Failed to build glob override")?;
 
-        // let walk = CapIgnoreWalker::new(vec![r#override], dirs);
-
         let offset = offset.unwrap_or(0);
         let limit = limit.unwrap_or(Self::DEFAULT_LIMIT);
 
@@ -71,7 +72,7 @@ impl Filesystem {
 
         let mut results = BinaryHeap::new();
 
-        crate::cap_ignore_walker::run(&[r#override], &data.dir, maybe_empty_path, |entry| {
+        walk::run(&[r#override], &data.dir, maybe_empty_path, |entry| {
             let (entry, entry_path) = match entry {
                 RunEntry::Match(entry, path) => (entry, path),
                 RunEntry::Error(err) => {

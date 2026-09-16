@@ -24,10 +24,10 @@ use tokio::{
 
 use crate::fs::{VfsDir, VfsDirBuilder};
 
-mod cap_ignore_walker;
 mod copy;
 mod fs;
 mod tools;
+mod walk;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
