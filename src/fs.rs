@@ -149,13 +149,13 @@ impl VfsDir {
         F: FnOnce(&VfsDir, &Path) -> Result<T>,
     {
         let VfsDir::Virtual(vdir) = self else {
-            unreachable!()
+            bail!("Virtually routed a real directory");
         };
 
         let mut components = path.components();
 
         let Some(first) = components.next() else {
-            bail!("Internal error: routed empty path");
+            bail!("Virtually routed an empty path");
         };
 
         if let Some(child) = vdir.children.get(first.as_os_str()) {
