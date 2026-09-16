@@ -153,7 +153,10 @@ impl VfsDir {
         };
 
         let mut components = path.components();
-        let first = components.next().unwrap();
+
+        let Some(first) = components.next() else {
+            bail!("Path is empty");
+        };
 
         if let Some(child) = vdir.children.get(first.as_os_str()) {
             f(child, components.as_path())
@@ -244,11 +247,7 @@ impl VfsDir {
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.create_dir(path)?),
-            VfsDir::Virtual(_) => self
-                .route_virtual(path, |c, p| c.create_dir(p))
-                .map_err(|_| {
-                    anyhow::anyhow!("Cannot create a directory inside a virtual directory")
-                }),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.create_dir(p)),
         }
     }
 
@@ -259,11 +258,7 @@ impl VfsDir {
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.create_dir_all(path)?),
-            VfsDir::Virtual(_) => self
-                .route_virtual(path, |c, p| c.create_dir_all(p))
-                .map_err(|_| {
-                    anyhow::anyhow!("Cannot create a directory inside a virtual directory")
-                }),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.create_dir_all(p)),
         }
     }
 
@@ -274,9 +269,7 @@ impl VfsDir {
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.create(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.create(p)).map_err(|_| {
-                anyhow::anyhow!("Cannot create a file directly in a virtual directory")
-            }),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.create(p)),
         }
     }
 
@@ -287,9 +280,7 @@ impl VfsDir {
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.write(path, data)?),
-            VfsDir::Virtual(_) => self
-                .route_virtual(path, |c, p| c.write(p, data.as_ref()))
-                .map_err(|_| anyhow::anyhow!("Cannot write to a virtual directory")),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.write(p, data.as_ref())),
         }
     }
 
@@ -460,9 +451,9 @@ impl VfsDir {
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.symlink_contents(src, dst)?),
-            VfsDir::Virtual(_) => self
-                .route_virtual(dst, |c, p| c.symlink_contents(src.as_ref(), p))
-                .map_err(|_| anyhow::anyhow!("Cannot create a symlink in a virtual directory")),
+            VfsDir::Virtual(_) => {
+                self.route_virtual(dst, |c, p| c.symlink_contents(src.as_ref(), p))
+            }
         }
     }
 
@@ -478,9 +469,9 @@ impl VfsDir {
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.symlink_dir(src, dst)?),
-            VfsDir::Virtual(_) => self
-                .route_virtual(dst, |c, p| c.symlink_contents_dir(src.as_ref(), p))
-                .map_err(|_| anyhow::anyhow!("Cannot create a symlink in a virtual directory")),
+            VfsDir::Virtual(_) => {
+                self.route_virtual(dst, |c, p| c.symlink_contents_dir(src.as_ref(), p))
+            }
         }
     }
 
@@ -496,9 +487,9 @@ impl VfsDir {
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.symlink_file(src, dst)?),
-            VfsDir::Virtual(_) => self
-                .route_virtual(dst, |c, p| c.symlink_contents_file(src.as_ref(), p))
-                .map_err(|_| anyhow::anyhow!("Cannot create a symlink in a virtual directory")),
+            VfsDir::Virtual(_) => {
+                self.route_virtual(dst, |c, p| c.symlink_contents_file(src.as_ref(), p))
+            }
         }
     }
 }
