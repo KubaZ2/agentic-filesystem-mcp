@@ -106,7 +106,7 @@ fn copy_recursive_unknown(
             // a feature flag
 
             let is_dir = ancestor_src_dir
-                .metadata(src_path)
+                .symlink_metadata(src_path)
                 .map(|m| m.is_dir())
                 .unwrap_or(false);
 
