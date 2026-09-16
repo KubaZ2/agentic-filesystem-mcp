@@ -1,6 +1,6 @@
 use std::{
     io::{BufRead, BufReader},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::Result;
@@ -142,8 +142,11 @@ where
     let mut current_dir_path = PathBuf::new();
 
     for component in base_path.components() {
-        if let std::path::Component::Normal(component) = component {
-            match current_dir.open_dir(component) {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                current_dir_path.push(component);
+            }
+            Component::Normal(component) => match current_dir.open_dir(component) {
                 Ok(new_sub_dir) => {
                     current_dir = new_sub_dir;
                     current_dir_path.push(component);
@@ -162,8 +165,15 @@ where
                     )))?;
                     return Ok(());
                 }
+            },
+            Component::CurDir | Component::ParentDir => {
+                // Should never happen since the path is supposed
+                // to be sanitized before calling this function
+                return Err(anyhow::anyhow!(
+                    "Path cannot contain '.' or '..' components",
+                ));
             }
-        }
+        };
     }
 
     walk(
