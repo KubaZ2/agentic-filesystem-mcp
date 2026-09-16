@@ -1,4 +1,4 @@
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, sync::Arc};
 
 use aho_corasick::AhoCorasick;
 use anyhow::{Context, Result, bail};
@@ -7,7 +7,7 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData, fs::VfsDir};
+use crate::{Filesystem, FilesystemData, fs::VfsDir, path_sanitizer::sanitize_path};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EditParams {
@@ -49,7 +49,9 @@ impl Filesystem {
             replace_all,
         }): Parameters<EditParams>,
     ) -> Result<String> {
-        let mut file = data.dir.open(&path)?;
+        let path = sanitize_path(&path)?;
+
+        let mut file = data.dir.open(path)?;
 
         let file_permissions = file
             .metadata()
@@ -59,13 +61,11 @@ impl Filesystem {
         let ac =
             AhoCorasick::new([&old_string]).context("Failed to create Aho-Corasick automaton")?;
 
-        let path = Path::new(&path);
-
         let file_name = path
             .file_name()
             .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", path.display()))?;
 
-        let dir = match Path::new(&path).parent() {
+        let dir = match path.parent() {
             Some(parent) => {
                 let dir = data
                     .dir

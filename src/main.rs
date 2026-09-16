@@ -26,6 +26,7 @@ use crate::fs::{VfsDir, VfsDirBuilder};
 
 mod copy;
 mod fs;
+mod path_sanitizer;
 mod tools;
 mod walk;
 
@@ -74,8 +75,6 @@ async fn main() -> Result<()> {
     ));
 
     let dir = get_dir(&abs_paths, root_path.as_deref())?;
-
-    // let dirs = get_dirs(&abs_paths, root_path.as_deref())?;
 
     let filesystem = Filesystem::new(dir);
 

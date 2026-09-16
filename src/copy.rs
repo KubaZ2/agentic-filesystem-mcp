@@ -1,31 +1,16 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 
 use crate::fs::{VfsDir, VfsDirEntry, VfsMetadata};
 
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut result = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                result.pop();
-            }
-            _ => result.push(component),
-        };
-    }
-
-    result
-}
-
-pub fn copy_recursive<P, Q>(dir: &VfsDir, src_path: &P, dst_path: &Q) -> Result<()>
+/// src_path and dst_path have to be sanitized
+pub fn copy_recursive<P, Q>(dir: &VfsDir, src_path: P, dst_path: Q) -> Result<()>
 where
     P: AsRef<Path>,
     Q: AsRef<Path>,
 {
-    let metadata = dir.symlink_metadata(src_path)?;
+    let metadata = dir.symlink_metadata(&src_path)?;
 
     copy_recursive_unknown(
         dir,
@@ -33,8 +18,8 @@ where
         dir,
         dst_path.as_ref(),
         metadata,
-        &normalize_path(src_path.as_ref()),
-        &normalize_path(dst_path.as_ref()),
+        src_path.as_ref(),
+        dst_path.as_ref(),
     )
 }
 

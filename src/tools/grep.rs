@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BinaryHeap, path::Path, sync::Arc};
+use std::{cmp::Reverse, collections::BinaryHeap, sync::Arc};
 
 use anyhow::{Context, Result};
 use grep::{
@@ -13,6 +13,7 @@ use rmcp::{
 
 use crate::{
     Filesystem, FilesystemData, GrepPrinter,
+    path_sanitizer::sanitize_path_option,
     walk::{self, RunEntry},
 };
 
@@ -102,12 +103,12 @@ impl Filesystem {
             show_line_numbers,
         }): Parameters<GrepParams>,
     ) -> Result<String> {
-        let maybe_empty_path = Path::new(path.as_deref().unwrap_or(""));
+        let path = sanitize_path_option(path.as_deref())?;
 
         let mut overrides = Vec::new();
 
         if let Some(glob) = glob {
-            let mut override_builder = OverrideBuilder::new(maybe_empty_path);
+            let mut override_builder = OverrideBuilder::new(path);
 
             override_builder
                 .add(&glob)
@@ -157,7 +158,7 @@ impl Filesystem {
 
         let mut results = BinaryHeap::new();
 
-        walk::run(&overrides, &data.dir, maybe_empty_path, |entry| {
+        walk::run(&overrides, &data.dir, path, |entry| {
             let (entry, entry_path) = match entry {
                 RunEntry::Match(entry, path) => (entry, path),
                 RunEntry::Error(err) => {
@@ -205,10 +206,7 @@ impl Filesystem {
             }
             .into_std();
 
-            let display_path = match path {
-                Some(ref p) => entry_path.strip_prefix(p)?,
-                None => entry_path,
-            };
+            let display_path = entry_path.strip_prefix(path)?;
 
             if let Err(err) = match printer {
                 GrepPrinter::Standard(ref mut p) => {

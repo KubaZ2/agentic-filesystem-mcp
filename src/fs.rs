@@ -142,6 +142,7 @@ pub enum VfsDir {
     Virtual(Arc<VirtualDir>),
 }
 
+#[allow(unused)]
 impl VfsDir {
     fn route_virtual<T, F>(&self, path: &Path, f: F) -> Result<T>
     where
@@ -161,7 +162,6 @@ impl VfsDir {
         }
     }
 
-    #[allow(unused)]
     pub fn exists<P: AsRef<Path>>(&self, path: P) -> bool {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
@@ -267,7 +267,6 @@ impl VfsDir {
         }
     }
 
-    #[allow(unused)]
     pub fn create<P: AsRef<Path>>(&self, path: P) -> Result<File> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
@@ -294,7 +293,6 @@ impl VfsDir {
         }
     }
 
-    #[allow(unused)]
     pub fn read_dir<P: AsRef<Path>>(&self, path: P) -> Result<Vec<Result<VfsDirEntry>>> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
@@ -345,7 +343,6 @@ impl VfsDir {
         }
     }
 
-    #[allow(unused)]
     pub fn read<P: AsRef<Path>>(&self, path: P) -> Result<Vec<u8>> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
@@ -357,7 +354,6 @@ impl VfsDir {
         }
     }
 
-    #[allow(unused)]
     pub fn read_to_string<P: AsRef<Path>>(&self, path: P) -> Result<String> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
@@ -369,7 +365,6 @@ impl VfsDir {
         }
     }
 
-    #[allow(unused)]
     pub fn set_mtime(&self, path: &Path, mtime: SystemTimeSpec) -> Result<()> {
         if path.as_os_str().is_empty() {
             bail!("Cannot set mtime on a virtual root or mount point itself");
@@ -525,6 +520,7 @@ pub enum VfsDirEntry {
     Virtual(VirtualDirEntry),
 }
 
+#[allow(unused)]
 impl VfsDirEntry {
     pub fn open(&self) -> Result<File> {
         match self {
@@ -533,7 +529,6 @@ impl VfsDirEntry {
         }
     }
 
-    #[allow(unused)]
     pub fn open_with(&self, options: &OpenOptions) -> Result<File> {
         match self {
             VfsDirEntry::Real(entry) => Ok(entry.open_with(options)?),

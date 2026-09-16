@@ -5,7 +5,7 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData};
+use crate::{Filesystem, FilesystemData, path_sanitizer::sanitize_path};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct MkdirParams {
@@ -32,6 +32,8 @@ impl Filesystem {
         data: Arc<FilesystemData>,
         Parameters(MkdirParams { path, parents }): Parameters<MkdirParams>,
     ) -> Result<String> {
+        let path = sanitize_path(&path)?;
+
         let parents = parents.unwrap_or(false);
 
         if parents {

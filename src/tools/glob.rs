@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BinaryHeap, path::Path, sync::Arc};
+use std::{cmp::Reverse, collections::BinaryHeap, sync::Arc};
 
 use anyhow::{Context, Result};
 use ignore::overrides::OverrideBuilder;
@@ -8,6 +8,7 @@ use rmcp::{
 
 use crate::{
     Filesystem, FilesystemData,
+    path_sanitizer::sanitize_path_option,
     walk::{self, RunEntry},
 };
 
@@ -51,9 +52,9 @@ impl Filesystem {
             offset,
         }): Parameters<GlobParams>,
     ) -> Result<String> {
-        let maybe_empty_path = Path::new(path.as_deref().unwrap_or(""));
+        let path = sanitize_path_option(path.as_deref())?;
 
-        let mut override_builder = OverrideBuilder::new(maybe_empty_path);
+        let mut override_builder = OverrideBuilder::new(path);
 
         override_builder
             .add(&pattern)
@@ -72,7 +73,7 @@ impl Filesystem {
 
         let mut results = BinaryHeap::new();
 
-        walk::run(&[r#override], &data.dir, maybe_empty_path, |entry| {
+        walk::run(&[r#override], &data.dir, path, |entry| {
             let (entry, entry_path) = match entry {
                 RunEntry::Match(entry, path) => (entry, path),
                 RunEntry::Error(err) => {
@@ -89,10 +90,7 @@ impl Filesystem {
                 }
             };
 
-            let display_path = match path {
-                Some(ref p) => entry_path.strip_prefix(p)?.display().to_string(),
-                None => entry_path.display().to_string(),
-            };
+            let display_path = entry_path.strip_prefix(path)?.display().to_string();
 
             total_results += 1;
 
@@ -142,6 +140,7 @@ mod tests {
     use cap_fs_ext::SystemTimeSpec;
     use std::{
         io::Write,
+        path::Path,
         time::{Duration, SystemTime},
     };
 

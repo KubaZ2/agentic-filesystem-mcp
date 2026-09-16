@@ -5,7 +5,7 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::Filesystem;
+use crate::{Filesystem, path_sanitizer::sanitize_path};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct WriteParams {
@@ -30,7 +30,9 @@ impl Filesystem {
         data: std::sync::Arc<crate::FilesystemData>,
         Parameters(WriteParams { path, content }): Parameters<WriteParams>,
     ) -> Result<String> {
-        if let Some(parent) = Path::new(&path).parent() {
+        let path = sanitize_path(&path)?;
+
+        if let Some(parent) = path.parent() {
             data.dir
                 .create_dir_all(parent)
                 .context("Failed to create parent directories for the file")?;

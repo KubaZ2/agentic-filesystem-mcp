@@ -1,6 +1,5 @@
 use std::{
     io::{BufRead, BufReader},
-    path::Path,
     sync::Arc,
 };
 
@@ -13,7 +12,7 @@ use rmcp::{
 };
 use std::fmt::Write as _;
 
-use crate::{Filesystem, FilesystemData, MimeType};
+use crate::{Filesystem, FilesystemData, MimeType, path_sanitizer::sanitize_path};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ReadParams {
@@ -50,11 +49,11 @@ impl Filesystem {
         data: Arc<FilesystemData>,
         parameters: Parameters<ReadParams>,
     ) -> Result<CallToolResult> {
-        let path = &parameters.0.path;
+        let path = sanitize_path(&parameters.0.path)?;
 
         let file = data.dir.open(path)?;
 
-        if let Some(extension) = Path::new(path).extension()
+        if let Some(extension) = path.extension()
             && let Some(extension) = extension.to_str()
             && let Some(media_mime_type) =
                 data.media_mime_types.get(extension.to_lowercase().as_str())

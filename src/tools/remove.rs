@@ -5,7 +5,7 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData};
+use crate::{Filesystem, FilesystemData, path_sanitizer::sanitize_path};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct RemoveParams {
@@ -32,14 +32,16 @@ impl Filesystem {
         data: Arc<FilesystemData>,
         Parameters(RemoveParams { path, recursive }): Parameters<RemoveParams>,
     ) -> Result<String> {
+        let path = sanitize_path(&path)?;
+
         let metadata = data
             .dir
-            .symlink_metadata(&path)
+            .symlink_metadata(path)
             .context("Failed to retrieve metadata for the specified path")?;
 
         if metadata.is_file() || metadata.is_symlink() {
             data.dir
-                .remove_file(&path)
+                .remove_file(path)
                 .context("Failed to remove the file")?;
 
             Ok("Successfully removed the file".to_string())
@@ -48,11 +50,11 @@ impl Filesystem {
 
             if recursive {
                 data.dir
-                    .remove_dir_all(&path)
+                    .remove_dir_all(path)
                     .context("Failed to remove the directory recursively")?;
             } else {
                 data.dir
-                    .remove_dir(&path)
+                    .remove_dir(path)
                     .context("Failed to remove the directory (consider using recursive option for non-empty directories)")?;
             }
 

@@ -5,7 +5,7 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData};
+use crate::{Filesystem, FilesystemData, path_sanitizer::sanitize_path};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct MoveParams {
@@ -33,8 +33,11 @@ impl Filesystem {
         data: Arc<FilesystemData>,
         Parameters(MoveParams { src_path, dst_path }): Parameters<MoveParams>,
     ) -> Result<String> {
+        let src_path = sanitize_path(&src_path)?;
+        let dst_path = sanitize_path(&dst_path)?;
+
         data.dir
-            .rename(&src_path, &data.dir, dst_path)
+            .rename(src_path, &data.dir, dst_path)
             .context("Failed to move the file or directory")?;
 
         Ok("Successfully moved the file or directory".to_string())

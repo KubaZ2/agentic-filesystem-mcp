@@ -5,7 +5,11 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData, copy::copy_file, copy::copy_recursive};
+use crate::{
+    Filesystem, FilesystemData,
+    copy::{copy_file, copy_recursive},
+    path_sanitizer::sanitize_path,
+};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct CopyParams {
@@ -41,6 +45,9 @@ impl Filesystem {
             recursive,
         }): Parameters<CopyParams>,
     ) -> Result<String> {
+        let src_path = sanitize_path(&src_path)?;
+        let dst_path = sanitize_path(&dst_path)?;
+
         if recursive.unwrap_or(false) {
             copy_recursive(&data.dir, &src_path, &dst_path)
                 .context("Failed to copy the file or directory recursively")?;
