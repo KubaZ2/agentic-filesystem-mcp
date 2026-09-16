@@ -186,13 +186,13 @@ impl Filesystem {
             |err| {
                 let err = anyhow::Error::new(err);
                 Self::log_tool_error(tool_name, &err);
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
+                CallToolResult::error(vec![ContentBlock::text(format!("{:#}", err))])
             },
             |result| {
                 result.map_or_else(
                     |err| {
                         Self::log_tool_error(tool_name, &err);
-                        CallToolResult::error(vec![ContentBlock::text(err.to_string())])
+                        CallToolResult::error(vec![ContentBlock::text(format!("{:#}", err))])
                     },
                     |s| CallToolResult::success(vec![ContentBlock::text(s)]),
                 )
@@ -209,13 +209,14 @@ impl Filesystem {
             .unwrap_or_else(|err| {
                 let err = anyhow::Error::new(err);
                 Self::log_tool_error(tool_name, &err);
-                Ok(CallToolResult::error(vec![ContentBlock::text(
-                    err.to_string(),
-                )]))
+                Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                    "{:#}",
+                    err
+                ))]))
             })
             .unwrap_or_else(|err| {
                 Self::log_tool_error(tool_name, &err);
-                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
+                CallToolResult::error(vec![ContentBlock::text(format!("{:#}", err))])
             })
     }
 

@@ -33,8 +33,9 @@ impl Filesystem {
         data: Arc<FilesystemData>,
         Parameters(MoveParams { src_path, dst_path }): Parameters<MoveParams>,
     ) -> Result<String> {
-        let src_path = sanitize_path(&src_path)?;
-        let dst_path = sanitize_path(&dst_path)?;
+        let src_path = sanitize_path(&src_path).context("Failed to sanitize the source path")?;
+        let dst_path =
+            sanitize_path(&dst_path).context("Failed to sanitize the destination path")?;
 
         data.dir
             .rename(src_path, &data.dir, dst_path)

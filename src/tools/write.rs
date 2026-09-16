@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::{Context, Result};
 use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
@@ -41,7 +39,7 @@ impl Filesystem {
         }
 
         data.dir
-            .write(Path::new(&path), content)
+            .write(path, content)
             .context("Failed to write to the file")?;
 
         Ok("Successfully wrote the file".to_string())

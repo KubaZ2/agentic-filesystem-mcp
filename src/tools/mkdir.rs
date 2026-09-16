@@ -38,11 +38,11 @@ impl Filesystem {
 
         if parents {
             data.dir
-                .create_dir_all(&path)
+                .create_dir_all(path)
                 .context("Failed to create the directory with parents")?;
         } else {
             data.dir
-                .create_dir(&path)
+                .create_dir(path)
                 .context("Failed to create the directory")?;
         }
 

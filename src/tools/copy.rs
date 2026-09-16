@@ -45,11 +45,12 @@ impl Filesystem {
             recursive,
         }): Parameters<CopyParams>,
     ) -> Result<String> {
-        let src_path = sanitize_path(&src_path)?;
-        let dst_path = sanitize_path(&dst_path)?;
+        let src_path = sanitize_path(&src_path).context("Failed to sanitize the source path")?;
+        let dst_path =
+            sanitize_path(&dst_path).context("Failed to sanitize the destination path")?;
 
         if recursive.unwrap_or(false) {
-            copy_recursive(&data.dir, &src_path, &dst_path)
+            copy_recursive(&data.dir, src_path, dst_path)
                 .context("Failed to copy the file or directory recursively")?;
         } else {
             copy_file(&data.dir, &src_path, &data.dir, &dst_path)

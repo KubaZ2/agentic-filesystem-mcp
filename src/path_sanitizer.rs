@@ -10,14 +10,17 @@ where
     for component in path.components() {
         match component {
             Component::Normal(_) => {}
-            Component::RootDir | Component::Prefix(_) => {
-                bail!("Path cannot contain root or prefix components: {:?}", path);
+            Component::RootDir => {
+                bail!("Path cannot contain root components");
             }
-            Component::CurDir | Component::ParentDir => {
-                bail!(
-                    "Path cannot contain '..' or leading '.' components: {:?}",
-                    path
-                );
+            Component::Prefix(_) => {
+                bail!("Path cannot contain prefix components");
+            }
+            Component::CurDir => {
+                bail!("Path cannot contain leading '.' components");
+            }
+            Component::ParentDir => {
+                bail!("Path cannot contain '..' components");
             }
         }
     }

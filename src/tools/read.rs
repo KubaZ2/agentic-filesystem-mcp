@@ -51,7 +51,7 @@ impl Filesystem {
     ) -> Result<CallToolResult> {
         let path = sanitize_path(&parameters.0.path)?;
 
-        let file = data.dir.open(path)?;
+        let file = data.dir.open(path).context("Failed to open the file")?;
 
         if let Some(extension) = path.extension()
             && let Some(extension) = extension.to_str()

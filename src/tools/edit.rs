@@ -61,9 +61,9 @@ impl Filesystem {
         let ac =
             AhoCorasick::new([&old_string]).context("Failed to create Aho-Corasick automaton")?;
 
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", path.display()))?;
+        let Some(file_name) = path.file_name() else {
+            bail!("The specified path does not have a valid file name");
+        };
 
         let dir = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => {
