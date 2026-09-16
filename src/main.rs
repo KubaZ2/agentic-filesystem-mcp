@@ -22,9 +22,12 @@ use tokio::{
     task::spawn_blocking,
 };
 
-mod cap_ignore_walker;
+use crate::fs::{VfsDir, VfsDirBuilder};
+
 mod copy;
+mod fs;
 mod tools;
+mod walk;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -36,13 +39,6 @@ struct Args {
     /// Whether to use absolute paths instead of relative paths
     #[arg(long, default_value_t = false)]
     absolute_paths: bool,
-}
-
-struct DirInfo {
-    /// Path relative to the root path
-    path: PathBuf,
-
-    dir: Dir,
 }
 
 #[tokio::main]
@@ -77,9 +73,11 @@ async fn main() -> Result<()> {
             .map_or("None".to_string(), |p| p.display().to_string())
     ));
 
-    let dirs = get_dirs(&abs_paths, root_path.as_deref())?;
+    let dir = get_dir(&abs_paths, root_path.as_deref())?;
 
-    let filesystem = Filesystem::new(dirs);
+    // let dirs = get_dirs(&abs_paths, root_path.as_deref())?;
+
+    let filesystem = Filesystem::new(dir);
 
     let service = filesystem.serve((stdin(), stdout())).await?;
 
@@ -88,26 +86,35 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn get_dirs(abs_paths: &[PathBuf], root_path: Option<&Path>) -> Result<Vec<DirInfo>> {
-    let mut dirs = abs_paths
-        .iter()
-        .map(|abs_path| {
-            let dir = Dir::open_ambient_dir(abs_path, ambient_authority())
-                .with_context(|| format!("Error opening directory {}", abs_path.display()))?;
+fn open_dir(path: &Path) -> Result<Dir> {
+    Dir::open_ambient_dir(path, ambient_authority())
+        .with_context(|| format!("Error opening directory {}", path.display()))
+}
 
-            let path = match root_path {
-                Some(root_path) => abs_path.strip_prefix(root_path)?,
-                None => abs_path,
-            }
-            .to_path_buf();
+fn get_dir(abs_paths: &[PathBuf], root_path: Option<&Path>) -> Result<VfsDir> {
+    if abs_paths.len() == 1
+        && let Some(root_path) = root_path
+        && abs_paths[0] == root_path
+    {
+        let dir = open_dir(root_path)?;
 
-            Ok((path.components().count(), DirInfo { path, dir }))
-        })
-        .collect::<Result<Vec<_>>>()?;
+        return Ok(VfsDirBuilder::from_root(dir).build());
+    }
 
-    dirs.sort_unstable_by(|(count_left, _), (count_right, _)| count_right.cmp(count_left));
+    let mut builder = VfsDirBuilder::new();
 
-    Ok(dirs.into_iter().map(|(_, dir)| dir).collect::<Vec<_>>())
+    for abs_path in abs_paths {
+        let dir = open_dir(abs_path)?;
+
+        let path = match root_path {
+            Some(root_path) => abs_path.strip_prefix(root_path)?,
+            None => abs_path,
+        };
+
+        builder.mount_dir(path, dir)?;
+    }
+
+    Ok(builder.build())
 }
 
 fn get_root_path(paths: &[PathBuf]) -> Result<Option<PathBuf>> {
@@ -148,57 +155,8 @@ enum MimeType {
 }
 
 struct FilesystemData {
-    dirs: Vec<DirInfo>,
+    dir: VfsDir,
     media_mime_types: HashMap<&'static str, MimeType>,
-}
-
-impl FilesystemData {
-    fn get_dir<'a>(&self, path: &'a impl AsRef<Path>) -> Result<(&DirInfo, &'a Path)> {
-        let path = path.as_ref();
-
-        for dir in &self.dirs {
-            if dir.path == path {
-                return Ok((dir, Path::new(".")));
-            } else if let Ok(rel_path) = path.strip_prefix(&dir.path) {
-                return Ok((dir, rel_path));
-            }
-        }
-
-        bail!("Path is not within the allowed paths");
-    }
-
-    fn get_search_dirs<'a>(
-        &self,
-        path: &'a Option<impl AsRef<Path>>,
-    ) -> Result<Vec<(&DirInfo, &'a Path)>> {
-        let path = match path {
-            Some(p) => p.as_ref(),
-            None => return Ok(self.dirs.iter().map(|dir| (dir, Path::new(""))).collect()),
-        };
-
-        let mut search_dirs = Vec::new();
-
-        for dir in &self.dirs {
-            // example:
-            // dir.path: dir_a/dir_b
-            // path: dir_a
-            if dir.path.starts_with(path) {
-                search_dirs.push((dir, Path::new("")));
-
-            // example:
-            // dir.path: dir_a
-            // path: dir_a/dir_b
-            } else if let Ok(rel_path) = path.strip_prefix(&dir.path) {
-                search_dirs.push((dir, rel_path));
-            }
-        }
-
-        if search_dirs.is_empty() {
-            bail!("Path is not within the allowed paths");
-        }
-
-        Ok(search_dirs)
-    }
 }
 
 struct Filesystem {
@@ -221,7 +179,7 @@ impl ServerHandler for Filesystem {}
 impl Filesystem {
     const DEFAULT_LIMIT: usize = 100;
 
-    fn new(dirs: Vec<DirInfo>) -> Self {
+    fn new(dir: VfsDir) -> Self {
         let media_mime_types = HashMap::from([
             ("png", MimeType::Image("image/png")),
             ("jpg", MimeType::Image("image/jpeg")),
@@ -250,7 +208,7 @@ impl Filesystem {
         Self {
             tool_router,
             data: Arc::new(FilesystemData {
-                dirs,
+                dir,
                 media_mime_types,
             }),
         }
@@ -323,32 +281,6 @@ mod tests {
         {
             PathBuf::from("/")
         }
-    }
-
-    #[test]
-    fn test_get_dirs() -> Result<()> {
-        let tempdir = tempfile::tempdir()?;
-
-        let root_path = tempdir.path();
-
-        std::fs::create_dir_all(root_path.join("dir_a/dir_b"))?;
-        std::fs::create_dir_all(root_path.join("dir_c"))?;
-
-        let abs_paths = vec![
-            root_path.join("dir_a/dir_b"),
-            root_path.join("dir_a"),
-            root_path.join("dir_c"),
-        ];
-
-        let dirs = get_dirs(&abs_paths, Some(root_path))?;
-
-        assert_eq!(dirs.len(), 3);
-        assert_eq!(dirs[0].path, PathBuf::from("dir_a/dir_b"));
-        assert!(dirs[1].path == *"dir_a" || dirs[1].path == *"dir_c");
-        assert!(dirs[2].path == *"dir_a" || dirs[2].path == *"dir_c");
-        assert_ne!(dirs[1].path, dirs[2].path);
-
-        Ok(())
     }
 
     #[test]

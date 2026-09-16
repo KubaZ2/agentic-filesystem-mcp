@@ -32,16 +32,14 @@ impl Filesystem {
         data: Arc<FilesystemData>,
         Parameters(RemoveParams { path, recursive }): Parameters<RemoveParams>,
     ) -> Result<String> {
-        let (dir, rel_path) = data.get_dir(&path)?;
-
-        let metadata = dir
+        let metadata = data
             .dir
-            .symlink_metadata(rel_path)
+            .symlink_metadata(&path)
             .context("Failed to retrieve metadata for the specified path")?;
 
         if metadata.is_file() || metadata.is_symlink() {
-            dir.dir
-                .remove_file(rel_path)
+            data.dir
+                .remove_file(&path)
                 .context("Failed to remove the file")?;
 
             Ok("Successfully removed the file".to_string())
@@ -49,12 +47,12 @@ impl Filesystem {
             let recursive = recursive.unwrap_or(false);
 
             if recursive {
-                dir.dir
-                    .remove_dir_all(rel_path)
+                data.dir
+                    .remove_dir_all(&path)
                     .context("Failed to remove the directory recursively")?;
             } else {
-                dir.dir
-                    .remove_dir(rel_path)
+                data.dir
+                    .remove_dir(&path)
                     .context("Failed to remove the directory (consider using recursive option for non-empty directories)")?;
             }
 
@@ -73,7 +71,7 @@ mod tests {
     fn test_remove_file(recursive: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test_file.txt", "Hello, world!")?;
+        data.dir.write("test_file.txt", "Hello, world!")?;
 
         let params = Parameters(RemoveParams {
             path: "test_file.txt".to_string(),
@@ -84,7 +82,7 @@ mod tests {
 
         assert_eq!(result, "Successfully removed the file");
 
-        assert!(!data.dirs[0].dir.exists("test_file.txt"));
+        assert!(!data.dir.exists("test_file.txt"));
 
         Ok(())
     }
@@ -107,7 +105,7 @@ mod tests {
     fn test_remove_empty_directory(recursive: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("empty_dir")?;
+        data.dir.create_dir("empty_dir")?;
 
         let params = Parameters(RemoveParams {
             path: "empty_dir".to_string(),
@@ -118,7 +116,7 @@ mod tests {
 
         assert_eq!(result, "Successfully removed the directory");
 
-        assert!(!data.dirs[0].dir.exists("empty_dir"));
+        assert!(!data.dir.exists("empty_dir"));
 
         Ok(())
     }
@@ -141,9 +139,8 @@ mod tests {
     fn test_remove_non_empty_directory(recursive: Option<bool>) -> Result<String> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("non_empty_dir")?;
-        data.dirs[0]
-            .dir
+        data.dir.create_dir("non_empty_dir")?;
+        data.dir
             .write("non_empty_dir/test_file.txt", "Hello, world!")?;
 
         let params = Parameters(RemoveParams {

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
@@ -28,16 +30,14 @@ impl Filesystem {
         data: std::sync::Arc<crate::FilesystemData>,
         Parameters(WriteParams { path, content }): Parameters<WriteParams>,
     ) -> Result<String> {
-        let (dir, rel_path) = data.get_dir(&path)?;
-
-        if let Some(parent) = rel_path.parent() {
-            dir.dir
+        if let Some(parent) = Path::new(&path).parent() {
+            data.dir
                 .create_dir_all(parent)
                 .context("Failed to create parent directories for the file")?;
         }
 
-        dir.dir
-            .write(rel_path, content)
+        data.dir
+            .write(Path::new(&path), content)
             .context("Failed to write to the file")?;
 
         Ok("Successfully wrote the file".to_string())
@@ -61,7 +61,7 @@ mod tests {
         let result = Filesystem::try_write(data.clone(), params)?;
         assert_eq!(result, "Successfully wrote the file");
 
-        let content = data.dirs[0].dir.read_to_string("test_file.txt")?;
+        let content = data.dir.read_to_string("test_file.txt")?;
 
         assert_eq!(content, "Hello, world!");
 
@@ -80,7 +80,7 @@ mod tests {
         let result = Filesystem::try_write(data.clone(), params)?;
         assert_eq!(result, "Successfully wrote the file");
 
-        let content = data.dirs[0]
+        let content = data
             .dir
             .read_to_string("deeply/nested/directory/test_file.txt")?;
 
@@ -93,9 +93,7 @@ mod tests {
     fn test_write_overwrites_existing_file() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0]
-            .dir
-            .write("overwrite_me.txt", "Initial content")?;
+        data.dir.write("overwrite_me.txt", "Initial content")?;
 
         let overwrite_params = Parameters(WriteParams {
             path: "overwrite_me.txt".to_string(),
@@ -105,7 +103,7 @@ mod tests {
         let result = Filesystem::try_write(data.clone(), overwrite_params)?;
         assert_eq!(result, "Successfully wrote the file");
 
-        let content = data.dirs[0].dir.read_to_string("overwrite_me.txt")?;
+        let content = data.dir.read_to_string("overwrite_me.txt")?;
 
         assert_eq!(content, "New content");
 
