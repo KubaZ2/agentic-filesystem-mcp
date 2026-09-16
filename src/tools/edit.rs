@@ -59,6 +59,12 @@ impl Filesystem {
         let ac =
             AhoCorasick::new([&old_string]).context("Failed to create Aho-Corasick automaton")?;
 
+        let path = Path::new(&path);
+
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", path.display()))?;
+
         let dir = match Path::new(&path).parent() {
             Some(parent) => {
                 let dir = data
@@ -130,7 +136,7 @@ impl Filesystem {
         drop(file);
 
         tempfile
-            .replace(path)
+            .replace(file_name)
             .context("Failed to replace the original file with the edited file")?;
 
         Ok(format!(
@@ -142,11 +148,13 @@ impl Filesystem {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use super::*;
     use anyhow::Result;
     use cap_tempfile::TempDir;
 
-    use crate::tools::test_utils::setup_test_fs;
+    use crate::tools::test_utils::{setup_test_fs, setup_virtual_fs};
 
     fn test_edit_single(replace_all: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
@@ -352,5 +360,34 @@ while (a < 50) {
     #[test]
     fn test_edit_multiline_replace_all_false() -> Result<()> {
         test_edit_multiline(Some(false))
+    }
+
+    #[test]
+    fn test_edit_virtual_fs() -> Result<()> {
+        let (_tempdirs, data) = setup_virtual_fs(&[OsStr::new("dir_a")])?;
+
+        let virtual_file_path = "dir_a/test.txt";
+
+        data.dir.write(virtual_file_path, "Hello, World!")?;
+
+        let params = Parameters(EditParams {
+            path: virtual_file_path.to_string(),
+            old_string: "World".to_string(),
+            new_string: "Rust".to_string(),
+            replace_all: None,
+        });
+
+        let result = Filesystem::try_edit(data.clone(), params)?;
+
+        assert_eq!(
+            result,
+            "Successfully edited the file (1 replacement(s) made)"
+        );
+
+        let content = data.dir.read_to_string(virtual_file_path)?;
+
+        assert_eq!(content, "Hello, Rust!");
+
+        Ok(())
     }
 }
