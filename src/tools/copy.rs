@@ -329,7 +329,7 @@ mod tests {
 
         #[cfg(windows)]
         {
-            data.dir.symlink_file("test.txt", "test_symlink")?;
+            data.dir.symlink_contents_file("test.txt", "test_symlink")?;
         }
 
         let params = Parameters(CopyParams {
@@ -384,7 +384,7 @@ mod tests {
 
         #[cfg(windows)]
         {
-            data.dir.symlink_file("test.txt", "test_symlink")?;
+            data.dir.symlink_contents_file("test.txt", "test_symlink")?;
         }
 
         let params = Parameters(CopyParams {
