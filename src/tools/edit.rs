@@ -1,13 +1,13 @@
-use std::{io::Write, sync::Arc};
+use std::{io::Write, path::Path, sync::Arc};
 
 use aho_corasick::AhoCorasick;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use cap_tempfile::TempFile;
 use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData};
+use crate::{Filesystem, FilesystemData, fs::VfsDir};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EditParams {
@@ -49,9 +49,7 @@ impl Filesystem {
             replace_all,
         }): Parameters<EditParams>,
     ) -> Result<String> {
-        let (dir, rel_path) = data.get_dir(&path)?;
-
-        let mut file = dir.dir.open(rel_path)?;
+        let mut file = data.dir.open(&path)?;
 
         let file_permissions = file
             .metadata()
@@ -61,7 +59,29 @@ impl Filesystem {
         let ac =
             AhoCorasick::new([&old_string]).context("Failed to create Aho-Corasick automaton")?;
 
-        let tempfile = TempFile::new(&dir.dir).context("Failed to create a temporary file")?;
+        let dir = match Path::new(&path).parent() {
+            Some(parent) => {
+                let dir = data
+                    .dir
+                    .open_dir(parent)
+                    .context("Failed to open parent directory")?;
+
+                match dir {
+                    VfsDir::Real(ref real_dir) => real_dir.clone(),
+                    VfsDir::Virtual(_) => {
+                        bail!("Cannot open parent directory of virtual file");
+                    }
+                }
+            }
+            None => match data.dir {
+                VfsDir::Real(ref real_dir) => real_dir.clone(),
+                VfsDir::Virtual(_) => {
+                    bail!("Cannot open parent directory of virtual file");
+                }
+            },
+        };
+
+        let tempfile = TempFile::new(&dir).context("Failed to create a temporary file")?;
 
         let mut writer = std::io::BufWriter::new(tempfile);
 
@@ -110,7 +130,7 @@ impl Filesystem {
         drop(file);
 
         tempfile
-            .replace(rel_path)
+            .replace(path)
             .context("Failed to replace the original file with the edited file")?;
 
         Ok(format!(
@@ -131,7 +151,7 @@ mod tests {
     fn test_edit_single(replace_all: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, World!")?;
+        data.dir.write("test.txt", "Hello, World!")?;
 
         let params = Parameters(EditParams {
             path: "test.txt".to_string(),
@@ -170,9 +190,7 @@ mod tests {
     ) -> Result<(TempDir, Arc<FilesystemData>, Result<String>)> {
         let (tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0]
-            .dir
-            .write("test.txt", "Hello, World! Hello, World!")?;
+        data.dir.write("test.txt", "Hello, World! Hello, World!")?;
 
         let params = Parameters(EditParams {
             path: "test.txt".to_string(),
@@ -221,7 +239,7 @@ mod tests {
             "Successfully edited the file (2 replacement(s) made)"
         );
 
-        let content = data.dirs[0].dir.read_to_string("test.txt")?;
+        let content = data.dir.read_to_string("test.txt")?;
 
         assert_eq!(content, "Hello, Rust! Hello, Rust!");
 
@@ -236,7 +254,7 @@ mod tests {
     fn test_edit_no_matches(replace_all: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, World!")?;
+        data.dir.write("test.txt", "Hello, World!")?;
 
         let params = Parameters(EditParams {
             path: "test.txt".to_string(),
@@ -273,7 +291,7 @@ mod tests {
     fn test_edit_multiline(replace_all: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write(
+        data.dir.write(
             "test.txt",
             "int a = 0;
 int b = 1;
@@ -305,7 +323,7 @@ while (a < 50) {
             "Successfully edited the file (1 replacement(s) made)"
         );
 
-        let content = data.dirs[0].dir.read_to_string("test.txt")?;
+        let content = data.dir.read_to_string("test.txt")?;
 
         assert_eq!(
             content,

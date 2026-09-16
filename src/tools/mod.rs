@@ -7,26 +7,25 @@ pub mod r#move;
 pub mod read;
 pub mod remove;
 pub mod write;
-
+//
 #[cfg(test)]
 pub(crate) mod test_utils {
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
 
     use anyhow::Result;
     use cap_std::ambient_authority;
     use cap_tempfile::TempDir;
 
-    use crate::{DirInfo, Filesystem, FilesystemData};
+    use crate::{Filesystem, FilesystemData, fs::VfsDirBuilder};
 
     pub fn setup_test_fs() -> Result<(TempDir, Arc<FilesystemData>)> {
         let tempdir = TempDir::new(ambient_authority())?;
 
-        let dir = DirInfo {
-            path: PathBuf::new(),
-            dir: tempdir.open_dir(".")?,
-        };
+        let builder = VfsDirBuilder::from_root(tempdir.open_dir(".")?);
 
-        let filesystem = Filesystem::new(vec![dir]);
+        let dir = builder.build();
+
+        let filesystem = Filesystem::new(dir);
 
         Ok((tempdir, filesystem.data.clone()))
     }

@@ -51,9 +51,8 @@ impl Filesystem {
         parameters: Parameters<ReadParams>,
     ) -> Result<CallToolResult> {
         let path = &parameters.0.path;
-        let (dir, rel_path) = data.get_dir(&path)?;
 
-        let file = dir.dir.open(rel_path)?;
+        let file = data.dir.open(path)?;
 
         if let Some(extension) = Path::new(path).extension()
             && let Some(extension) = extension.to_str()
@@ -169,7 +168,7 @@ mod tests {
     ) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", file_content)?;
+        data.dir.write("test.txt", file_content)?;
 
         let params = Parameters(ReadParams {
             path: "test.txt".to_string(),
@@ -280,7 +279,7 @@ mod tests {
 
         let file_path = format!("test.{}", extension);
 
-        data.dirs[0].dir.write(&file_path, &image_data)?;
+        data.dir.write(&file_path, &image_data)?;
 
         let params = Parameters(ReadParams {
             path: file_path,
@@ -346,7 +345,7 @@ mod tests {
 
         let file_path = format!("test.{}", extension);
 
-        data.dirs[0].dir.write(&file_path, &audio_data)?;
+        data.dir.write(&file_path, &audio_data)?;
 
         let params = Parameters(ReadParams {
             path: file_path,

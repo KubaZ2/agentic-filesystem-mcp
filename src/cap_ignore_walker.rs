@@ -1,81 +1,90 @@
 use std::{
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Result;
-use cap_std::fs::{Dir, DirEntry};
 use ignore::{
     gitignore::{Gitignore, GitignoreBuilder},
     overrides::Override,
 };
 
-use crate::DirInfo;
+use crate::fs::{VfsDir, VfsDirEntry};
 
-pub struct CapIgnoreWalker<'a> {
-    overrides: Vec<Override>,
-    dirs: Vec<(&'a DirInfo, &'a Path)>,
-}
+// use crate::DirInfo;
+
+// pub struct CapIgnoreWalker<'a> {
+//     overrides: Vec<Override>,
+//     dir: &'a VfsDir,
+//     // dirs: Vec<(&'a DirInfo, &'a Path)>,
+// }
 
 pub enum RunEntry<'a> {
-    Match(&'a DirEntry, &'a Path),
+    Match(&'a VfsDirEntry, &'a Path),
     Error(anyhow::Error),
 }
 
-impl CapIgnoreWalker<'_> {
-    pub fn new<'a>(
-        overrides: Vec<Override>,
-        dirs: Vec<(&'a DirInfo, &'a Path)>,
-    ) -> CapIgnoreWalker<'a> {
-        CapIgnoreWalker { overrides, dirs }
-    }
+fn walk<F>(
+    overrides: &[Override],
+    current_dir: &VfsDir,
+    current_path: &Path,
+    gitignores: &[Gitignore],
+    on_match: &mut F,
+) -> Result<()>
+where
+    F: FnMut(RunEntry) -> Result<()>,
+{
+    let entries = match current_dir.entries() {
+        Ok(entries) => entries,
+        Err(err) => {
+            on_match(RunEntry::Error(anyhow::anyhow!(
+                "Failed to read directory {:?}: {}",
+                current_path,
+                err
+            )))?;
+            return Ok(());
+        }
+    };
 
-    fn walk<F>(
-        &self,
-        current_dir: &Dir,
-        current_path: &Path,
-        gitignores: &[Gitignore],
-        on_match: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(RunEntry) -> Result<()>,
-    {
-        let entries = match current_dir.entries() {
-            Ok(entries) => entries,
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
             Err(err) => {
                 on_match(RunEntry::Error(anyhow::anyhow!(
-                    "Failed to read directory {:?}: {}",
+                    "Failed to read directory entry in {:?}: {}",
                     current_path,
                     err
                 )))?;
-                return Ok(());
+                continue;
             }
         };
 
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(err) => {
-                    on_match(RunEntry::Error(anyhow::anyhow!(
-                        "Failed to read directory entry in {:?}: {}",
-                        current_path,
-                        err
-                    )))?;
-                    continue;
+        let entry_name = entry.file_name();
+
+        let entry_path = current_path.join(&entry_name);
+
+        let is_dir = entry.file_type().is_ok_and(|ft| ft.is_dir());
+
+        let mut is_ignored = false;
+        let mut is_whitelisted = false;
+
+        for r#override in overrides.iter().rev() {
+            match r#override.matched(&entry_path, is_dir) {
+                ignore::Match::Ignore(_) => {
+                    is_ignored = true;
+                    break;
                 }
-            };
+                ignore::Match::Whitelist(_) => {
+                    is_whitelisted = true;
+                    break;
+                }
+                ignore::Match::None => {}
+            }
+        }
 
-            let entry_name = entry.file_name();
-
-            let entry_path = current_path.join(&entry_name);
-
-            let is_dir = entry.file_type().is_ok_and(|ft| ft.is_dir());
-
-            let mut is_ignored = false;
-            let mut is_whitelisted = false;
-
-            for r#override in self.overrides.iter().rev() {
-                match r#override.matched(&entry_path, is_dir) {
+        if !is_ignored && !is_whitelisted {
+            for gitignore in gitignores.iter().rev() {
+                match gitignore.matched(&entry_path, is_dir) {
                     ignore::Match::Ignore(_) => {
                         is_ignored = true;
                         break;
@@ -87,167 +96,436 @@ impl CapIgnoreWalker<'_> {
                     ignore::Match::None => {}
                 }
             }
-
-            if !is_ignored && !is_whitelisted {
-                for gitignore in gitignores.iter().rev() {
-                    match gitignore.matched(&entry_path, is_dir) {
-                        ignore::Match::Ignore(_) => {
-                            is_ignored = true;
-                            break;
-                        }
-                        ignore::Match::Whitelist(_) => {
-                            is_whitelisted = true;
-                            break;
-                        }
-                        ignore::Match::None => {}
-                    }
-                }
-            }
-
-            if !is_ignored && !is_whitelisted && Self::is_entry_hidden(&entry) {
-                is_ignored = true;
-            }
-
-            if is_ignored {
-                continue;
-            }
-
-            if !is_dir || is_whitelisted || self.overrides.is_empty() {
-                on_match(RunEntry::Match(&entry, &entry_path))?;
-            }
-
-            if is_dir && let Ok(new_sub_dir) = entry.open_dir() {
-                if let Some(gitignore) =
-                    Self::read_gitignore_safe(&new_sub_dir, &entry_path, on_match)?
-                {
-                    let mut new_gitignores = gitignores.to_vec();
-                    new_gitignores.push(gitignore);
-
-                    self.walk(&new_sub_dir, &entry_path, &new_gitignores, on_match)?;
-                } else {
-                    self.walk(&new_sub_dir, &entry_path, gitignores, on_match)?;
-                }
-            }
         }
 
-        Ok(())
+        if !is_ignored && !is_whitelisted && is_entry_hidden(&entry) {
+            is_ignored = true;
+        }
+
+        if is_ignored {
+            continue;
+        }
+
+        if !is_dir || is_whitelisted || overrides.is_empty() {
+            on_match(RunEntry::Match(&entry, &entry_path))?;
+        }
+
+        if is_dir && let Ok(new_sub_dir) = entry.open_dir() {
+            if let Some(gitignore) = read_gitignore_safe(&new_sub_dir, &entry_path, on_match)? {
+                let mut new_gitignores = gitignores.to_vec();
+                new_gitignores.push(gitignore);
+
+                walk(
+                    overrides,
+                    &new_sub_dir,
+                    &entry_path,
+                    &new_gitignores,
+                    on_match,
+                )?;
+            } else {
+                walk(overrides, &new_sub_dir, &entry_path, gitignores, on_match)?;
+            }
+        }
     }
 
-    pub fn run<F>(&self, mut on_match: F) -> Result<()>
-    where
-        F: FnMut(RunEntry) -> Result<()>,
-    {
-        'dirs: for (dir, rel_path) in &self.dirs {
-            let mut base_gitignores = Vec::new();
+    Ok(())
+}
 
-            if let Some(gitignore) = Self::read_gitignore_safe(&dir.dir, &dir.path, &mut on_match)?
-            {
-                base_gitignores.push(gitignore);
-            }
+pub fn run<F>(
+    overrides: &[Override],
+    root_dir: &VfsDir,
+    base_path: &Path,
+    mut on_match: F,
+) -> Result<()>
+where
+    F: FnMut(RunEntry) -> Result<()>,
+{
+    let mut base_gitignores = Vec::new();
 
-            let mut sub_dir = match dir.dir.try_clone() {
-                Ok(sub_dir) => sub_dir,
+    if let Some(gitignore) = read_gitignore_safe(root_dir, Path::new(""), &mut on_match)? {
+        base_gitignores.push(gitignore);
+    }
+
+    let mut current_dir = root_dir.clone();
+    let mut current_dir_path = PathBuf::new();
+
+    for component in base_path.components() {
+        if let std::path::Component::Normal(component) = component {
+            match current_dir.open_dir(component) {
+                Ok(new_sub_dir) => {
+                    current_dir = new_sub_dir;
+                    current_dir_path.push(component);
+
+                    if let Some(gitignore) =
+                        read_gitignore_safe(&current_dir, &current_dir_path, &mut on_match)?
+                    {
+                        base_gitignores.push(gitignore);
+                    }
+                }
                 Err(err) => {
                     on_match(RunEntry::Error(anyhow::anyhow!(
                         "Failed to open directory {:?}: {}",
-                        dir.path,
+                        current_dir_path.join(component),
                         err
                     )))?;
-                    continue;
-                }
-            };
-            let mut sub_dir_path = dir.path.clone();
-
-            for component in rel_path.components() {
-                if let std::path::Component::Normal(component) = component {
-                    match sub_dir.open_dir(component) {
-                        Ok(new_sub_dir) => {
-                            sub_dir = new_sub_dir;
-                            sub_dir_path = sub_dir_path.join(component);
-
-                            if let Some(gitignore) =
-                                Self::read_gitignore_safe(&sub_dir, &sub_dir_path, &mut on_match)?
-                            {
-                                base_gitignores.push(gitignore);
-                            }
-                        }
-                        Err(err) => {
-                            on_match(RunEntry::Error(anyhow::anyhow!(
-                                "Failed to open directory {:?}: {}",
-                                sub_dir_path.join(component),
-                                err
-                            )))?;
-                            continue 'dirs;
-                        }
-                    }
+                    return Ok(());
                 }
             }
-
-            self.walk(&sub_dir, &sub_dir_path, &base_gitignores, &mut on_match)?;
-        }
-
-        Ok(())
-    }
-
-    fn read_gitignore_safe<F>(
-        dir: &Dir,
-        dir_path: &Path,
-        on_match: &mut F,
-    ) -> Result<Option<Gitignore>>
-    where
-        F: FnMut(RunEntry) -> Result<()>,
-    {
-        Ok(
-            match CapIgnoreWalker::read_gitignore(dir, dir_path, on_match) {
-                Ok(gitignore) => gitignore,
-                Err(err) => {
-                    on_match(RunEntry::Error(anyhow::anyhow!(
-                        "Failed to create gitignore for directory {:?}: {}",
-                        dir_path,
-                        err
-                    )))?;
-                    None
-                }
-            },
-        )
-    }
-
-    fn read_gitignore<F>(
-        dir: &Dir,
-        dir_path: &Path,
-        on_match: &mut F,
-    ) -> Result<Option<ignore::gitignore::Gitignore>>
-    where
-        F: FnMut(RunEntry) -> Result<()>,
-    {
-        if let Ok(file) = dir.open(".gitignore") {
-            let mut gitignore_builder = GitignoreBuilder::new(dir_path);
-
-            let reader = BufReader::new(file);
-
-            let gitignore_path = dir_path.join(".gitignore");
-
-            for line in reader.lines() {
-                let line = line?;
-
-                if let Err(err) = gitignore_builder.add_line(Some(gitignore_path.clone()), &line) {
-                    on_match(RunEntry::Error(anyhow::anyhow!(
-                        "Failed to add line to gitignore builder in {:?}: {}",
-                        gitignore_path,
-                        err
-                    )))?;
-                }
-            }
-
-            let gitignore = gitignore_builder.build()?;
-
-            Ok(Some(gitignore))
-        } else {
-            Ok(None)
         }
     }
 
-    fn is_entry_hidden(entry: &DirEntry) -> bool {
-        entry.file_name().as_encoded_bytes().starts_with(b".")
+    walk(
+        overrides,
+        &current_dir,
+        &current_dir_path,
+        &base_gitignores,
+        &mut on_match,
+    )
+
+    // 'dirs: for (dir, rel_path) in &self.dirs {
+    //     let mut base_gitignores = Vec::new();
+    //
+    //     if let Some(gitignore) = Self::read_gitignore_safe(&dir.dir, &dir.path, &mut on_match)?
+    //     {
+    //         base_gitignores.push(gitignore);
+    //     }
+    //
+    //     let mut sub_dir = match dir.dir.try_clone() {
+    //         Ok(sub_dir) => sub_dir,
+    //         Err(err) => {
+    //             on_match(RunEntry::Error(anyhow::anyhow!(
+    //                 "Failed to open directory {:?}: {}",
+    //                 dir.path,
+    //                 err
+    //             )))?;
+    //             continue;
+    //         }
+    //     };
+    //     let mut sub_dir_path = dir.path.clone();
+    //
+    //     for component in rel_path.components() {
+    //         if let std::path::Component::Normal(component) = component {
+    //             match sub_dir.open_dir(component) {
+    //                 Ok(new_sub_dir) => {
+    //                     sub_dir = new_sub_dir;
+    //                     sub_dir_path = sub_dir_path.join(component);
+    //
+    //                     if let Some(gitignore) =
+    //                         Self::read_gitignore_safe(&sub_dir, &sub_dir_path, &mut on_match)?
+    //                     {
+    //                         base_gitignores.push(gitignore);
+    //                     }
+    //                 }
+    //                 Err(err) => {
+    //                     on_match(RunEntry::Error(anyhow::anyhow!(
+    //                         "Failed to open directory {:?}: {}",
+    //                         sub_dir_path.join(component),
+    //                         err
+    //                     )))?;
+    //                     continue 'dirs;
+    //                 }
+    //             }
+    //         }
+    //     }
+    //
+    //     self.walk(&sub_dir, &sub_dir_path, &base_gitignores, &mut on_match)?;
+    // }
+    //
+    // Ok(())
+}
+
+fn read_gitignore_safe<F>(
+    dir: &VfsDir,
+    dir_path: &Path,
+    on_match: &mut F,
+) -> Result<Option<Gitignore>>
+where
+    F: FnMut(RunEntry) -> Result<()>,
+{
+    Ok(match read_gitignore(dir, dir_path, on_match) {
+        Ok(gitignore) => gitignore,
+        Err(err) => {
+            on_match(RunEntry::Error(anyhow::anyhow!(
+                "Failed to create gitignore for directory {:?}: {}",
+                dir_path,
+                err
+            )))?;
+            None
+        }
+    })
+}
+
+fn read_gitignore<F>(
+    dir: &VfsDir,
+    dir_path: &Path,
+    on_match: &mut F,
+) -> Result<Option<ignore::gitignore::Gitignore>>
+where
+    F: FnMut(RunEntry) -> Result<()>,
+{
+    if let Ok(file) = dir.open(".gitignore") {
+        let mut gitignore_builder = GitignoreBuilder::new(dir_path);
+
+        let reader = BufReader::new(file);
+
+        let gitignore_path = dir_path.join(".gitignore");
+
+        for line in reader.lines() {
+            let line = line?;
+
+            if let Err(err) = gitignore_builder.add_line(Some(gitignore_path.clone()), &line) {
+                on_match(RunEntry::Error(anyhow::anyhow!(
+                    "Failed to add line to gitignore builder in {:?}: {}",
+                    gitignore_path,
+                    err
+                )))?;
+            }
+        }
+
+        let gitignore = gitignore_builder.build()?;
+
+        Ok(Some(gitignore))
+    } else {
+        Ok(None)
     }
 }
+
+fn is_entry_hidden(entry: &VfsDirEntry) -> bool {
+    entry.file_name().as_encoded_bytes().starts_with(b".")
+}
+
+// impl CapIgnoreWalker<'_> {
+//     pub fn new<'a>(overrides: Vec<Override>, dir: &'a VfsDir) -> CapIgnoreWalker<'a> {
+//         CapIgnoreWalker { overrides, dir }
+//     }
+//
+//     fn walk<F>(
+//         &self,
+//         current_dir: &Dir,
+//         current_path: &Path,
+//         gitignores: &[Gitignore],
+//         on_match: &mut F,
+//     ) -> Result<()>
+//     where
+//         F: FnMut(RunEntry) -> Result<()>,
+//     {
+//         let entries = match current_dir.entries() {
+//             Ok(entries) => entries,
+//             Err(err) => {
+//                 on_match(RunEntry::Error(anyhow::anyhow!(
+//                     "Failed to read directory {:?}: {}",
+//                     current_path,
+//                     err
+//                 )))?;
+//                 return Ok(());
+//             }
+//         };
+//
+//         for entry in entries {
+//             let entry = match entry {
+//                 Ok(entry) => entry,
+//                 Err(err) => {
+//                     on_match(RunEntry::Error(anyhow::anyhow!(
+//                         "Failed to read directory entry in {:?}: {}",
+//                         current_path,
+//                         err
+//                     )))?;
+//                     continue;
+//                 }
+//             };
+//
+//             let entry_name = entry.file_name();
+//
+//             let entry_path = current_path.join(&entry_name);
+//
+//             let is_dir = entry.file_type().is_ok_and(|ft| ft.is_dir());
+//
+//             let mut is_ignored = false;
+//             let mut is_whitelisted = false;
+//
+//             for r#override in self.overrides.iter().rev() {
+//                 match r#override.matched(&entry_path, is_dir) {
+//                     ignore::Match::Ignore(_) => {
+//                         is_ignored = true;
+//                         break;
+//                     }
+//                     ignore::Match::Whitelist(_) => {
+//                         is_whitelisted = true;
+//                         break;
+//                     }
+//                     ignore::Match::None => {}
+//                 }
+//             }
+//
+//             if !is_ignored && !is_whitelisted {
+//                 for gitignore in gitignores.iter().rev() {
+//                     match gitignore.matched(&entry_path, is_dir) {
+//                         ignore::Match::Ignore(_) => {
+//                             is_ignored = true;
+//                             break;
+//                         }
+//                         ignore::Match::Whitelist(_) => {
+//                             is_whitelisted = true;
+//                             break;
+//                         }
+//                         ignore::Match::None => {}
+//                     }
+//                 }
+//             }
+//
+//             if !is_ignored && !is_whitelisted && Self::is_entry_hidden(&entry) {
+//                 is_ignored = true;
+//             }
+//
+//             if is_ignored {
+//                 continue;
+//             }
+//
+//             if !is_dir || is_whitelisted || self.overrides.is_empty() {
+//                 on_match(RunEntry::Match(&entry, &entry_path))?;
+//             }
+//
+//             if is_dir && let Ok(new_sub_dir) = entry.open_dir() {
+//                 if let Some(gitignore) =
+//                     Self::read_gitignore_safe(&new_sub_dir, &entry_path, on_match)?
+//                 {
+//                     let mut new_gitignores = gitignores.to_vec();
+//                     new_gitignores.push(gitignore);
+//
+//                     self.walk(&new_sub_dir, &entry_path, &new_gitignores, on_match)?;
+//                 } else {
+//                     self.walk(&new_sub_dir, &entry_path, gitignores, on_match)?;
+//                 }
+//             }
+//         }
+//
+//         Ok(())
+//     }
+//
+//     pub fn run<F>(&self, mut on_match: F) -> Result<()>
+//     where
+//         F: FnMut(RunEntry) -> Result<()>,
+//     {
+//         let mut base_gitignores = Vec::new();
+//
+//         if let Some(gitignore) = Self::read_gitignore_safe(&self.dir, Path::new(""), &mut on_match)?
+//         {
+//             base_gitignores.push(gitignore);
+//         }
+//
+//         Ok(())
+//
+//         // 'dirs: for (dir, rel_path) in &self.dirs {
+//         //     let mut base_gitignores = Vec::new();
+//         //
+//         //     if let Some(gitignore) = Self::read_gitignore_safe(&dir.dir, &dir.path, &mut on_match)?
+//         //     {
+//         //         base_gitignores.push(gitignore);
+//         //     }
+//         //
+//         //     let mut sub_dir = match dir.dir.try_clone() {
+//         //         Ok(sub_dir) => sub_dir,
+//         //         Err(err) => {
+//         //             on_match(RunEntry::Error(anyhow::anyhow!(
+//         //                 "Failed to open directory {:?}: {}",
+//         //                 dir.path,
+//         //                 err
+//         //             )))?;
+//         //             continue;
+//         //         }
+//         //     };
+//         //     let mut sub_dir_path = dir.path.clone();
+//         //
+//         //     for component in rel_path.components() {
+//         //         if let std::path::Component::Normal(component) = component {
+//         //             match sub_dir.open_dir(component) {
+//         //                 Ok(new_sub_dir) => {
+//         //                     sub_dir = new_sub_dir;
+//         //                     sub_dir_path = sub_dir_path.join(component);
+//         //
+//         //                     if let Some(gitignore) =
+//         //                         Self::read_gitignore_safe(&sub_dir, &sub_dir_path, &mut on_match)?
+//         //                     {
+//         //                         base_gitignores.push(gitignore);
+//         //                     }
+//         //                 }
+//         //                 Err(err) => {
+//         //                     on_match(RunEntry::Error(anyhow::anyhow!(
+//         //                         "Failed to open directory {:?}: {}",
+//         //                         sub_dir_path.join(component),
+//         //                         err
+//         //                     )))?;
+//         //                     continue 'dirs;
+//         //                 }
+//         //             }
+//         //         }
+//         //     }
+//         //
+//         //     self.walk(&sub_dir, &sub_dir_path, &base_gitignores, &mut on_match)?;
+//         // }
+//         //
+//         // Ok(())
+//     }
+//
+//     fn read_gitignore_safe<F>(
+//         dir: &VfsDir,
+//         dir_path: &Path,
+//         on_match: &mut F,
+//     ) -> Result<Option<Gitignore>>
+//     where
+//         F: FnMut(RunEntry) -> Result<()>,
+//     {
+//         Ok(
+//             match CapIgnoreWalker::read_gitignore(dir, dir_path, on_match) {
+//                 Ok(gitignore) => gitignore,
+//                 Err(err) => {
+//                     on_match(RunEntry::Error(anyhow::anyhow!(
+//                         "Failed to create gitignore for directory {:?}: {}",
+//                         dir_path,
+//                         err
+//                     )))?;
+//                     None
+//                 }
+//             },
+//         )
+//     }
+//
+//     fn read_gitignore<F>(
+//         dir: &VfsDir,
+//         dir_path: &Path,
+//         on_match: &mut F,
+//     ) -> Result<Option<ignore::gitignore::Gitignore>>
+//     where
+//         F: FnMut(RunEntry) -> Result<()>,
+//     {
+//         if let Ok(file) = dir.open(".gitignore") {
+//             let mut gitignore_builder = GitignoreBuilder::new(dir_path);
+//
+//             let reader = BufReader::new(file);
+//
+//             let gitignore_path = dir_path.join(".gitignore");
+//
+//             for line in reader.lines() {
+//                 let line = line?;
+//
+//                 if let Err(err) = gitignore_builder.add_line(Some(gitignore_path.clone()), &line) {
+//                     on_match(RunEntry::Error(anyhow::anyhow!(
+//                         "Failed to add line to gitignore builder in {:?}: {}",
+//                         gitignore_path,
+//                         err
+//                     )))?;
+//                 }
+//             }
+//
+//             let gitignore = gitignore_builder.build()?;
+//
+//             Ok(Some(gitignore))
+//         } else {
+//             Ok(None)
+//         }
+//     }
+//
+//     fn is_entry_hidden(entry: &DirEntry) -> bool {
+//         entry.file_name().as_encoded_bytes().starts_with(b".")
+//     }
+// }

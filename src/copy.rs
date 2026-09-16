@@ -1,21 +1,48 @@
-use std::path::Path;
-
-use cap_std::fs::{Dir, DirEntry, Metadata};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-pub fn copy_recursive(
-    src_dir: &Dir,
-    src_path: &Path,
-    dst_dir: &Dir,
-    dst_path: &Path,
-) -> Result<()> {
-    let metadata = src_dir.symlink_metadata(src_path)?;
+use crate::fs::{VfsDir, VfsDirEntry, VfsMetadata};
 
-    copy_recursive_unknown(src_dir, src_path, dst_dir, dst_path, metadata)
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            _ => result.push(component),
+        };
+    }
+
+    result
 }
 
-pub fn copy_file(src_dir: &Dir, src_path: &Path, dst_dir: &Dir, dst_path: &Path) -> Result<()> {
+pub fn copy_recursive<P, Q>(dir: &VfsDir, src_path: &P, dst_path: &Q) -> Result<()>
+where
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+{
+    let metadata = dir.symlink_metadata(src_path)?;
+
+    copy_recursive_unknown(
+        dir,
+        src_path.as_ref(),
+        dir,
+        dst_path.as_ref(),
+        metadata,
+        &normalize_path(src_path.as_ref()),
+        &normalize_path(dst_path.as_ref()),
+    )
+}
+
+pub fn copy_file<P, Q>(src_dir: &VfsDir, src_path: &P, dst_dir: &VfsDir, dst_path: &Q) -> Result<()>
+where
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+{
     let mut src_file = src_dir.open(src_path)?;
 
     let mut dst_file = dst_dir.open_with(
@@ -31,10 +58,10 @@ pub fn copy_file(src_dir: &Dir, src_path: &Path, dst_dir: &Dir, dst_path: &Path)
 }
 
 fn copy_file_with_metadata(
-    src_dir: &Dir,
+    src_dir: &VfsDir,
     src_path: &Path,
-    src_metadata: &Metadata,
-    dst_dir: &Dir,
+    src_metadata: &VfsMetadata,
+    dst_dir: &VfsDir,
     dst_path: &Path,
 ) -> Result<()> {
     let mut src_file = src_dir.open(src_path)?;
@@ -46,17 +73,21 @@ fn copy_file_with_metadata(
 
     std::io::copy(&mut src_file, &mut dst_file)?;
 
-    dst_file.set_permissions(src_metadata.permissions())?;
+    if let Some(permissions) = src_metadata.permissions() {
+        dst_file.set_permissions(permissions)?;
+    }
 
     Ok(())
 }
 
 fn copy_recursive_unknown(
-    ancestor_src_dir: &Dir,
+    ancestor_src_dir: &VfsDir,
     src_path: &Path,
-    ancestor_dst_dir: &Dir,
+    ancestor_dst_dir: &VfsDir,
     dst_path: &Path,
-    metadata: Metadata,
+    metadata: VfsMetadata,
+    current_src_path: &Path,
+    initial_dst_path: &Path,
 ) -> Result<()> {
     let file_type = metadata.file_type();
 
@@ -70,18 +101,9 @@ fn copy_recursive_unknown(
 
         #[cfg(windows)]
         {
-            // TODO: cap std doesn't seem to support absolute symlinks on Windows
-
-            // TODO: the code below should work for relative symlinks, but cap_std::fs::FileTypeExt
-            // requires an unstable feature flag, so we will follow the symlink to check the type
-            //
-            // use cap_std::fs::FileTypeExt;
-            //
-            // if file_type.is_symlink_dir() {
-            //     ancestor_dst_dir.symlink_dir(symlink_target_path, dst_path)?;
-            // } else if file_type.is_symlink_file() {
-            //     ancestor_dst_dir.symlink_file(symlink_target_path, dst_path)?;
-            // }
+            // TODO: the code below follows the symlink to check the type,
+            // because cap std hides Windows-specific extensions behind
+            // a feature flag
 
             let is_dir = ancestor_src_dir
                 .metadata(src_path)
@@ -89,9 +111,9 @@ fn copy_recursive_unknown(
                 .unwrap_or(false);
 
             if is_dir {
-                ancestor_dst_dir.symlink_dir(symlink_target_path, dst_path)?;
+                ancestor_dst_dir.symlink_contents_dir(symlink_target_path, dst_path)?;
             } else {
-                ancestor_dst_dir.symlink_file(symlink_target_path, dst_path)?;
+                ancestor_dst_dir.symlink_contents_file(symlink_target_path, dst_path)?;
             }
         }
     } else if file_type.is_file() {
@@ -107,29 +129,58 @@ fn copy_recursive_unknown(
 
         let entries = current_src_dir
             .entries()?
-            .collect::<Result<Vec<DirEntry>, _>>()?;
+            .into_iter()
+            .collect::<Result<Vec<VfsDirEntry>>>()?;
 
         ancestor_dst_dir.create_dir(dst_path)?;
 
         let current_dst_dir = ancestor_dst_dir.open_dir(dst_path)?;
 
-        copy_recursive_internal(entries, current_src_dir, current_dst_dir)?;
+        copy_recursive_internal(
+            entries,
+            current_src_dir,
+            current_dst_dir,
+            current_src_path,
+            initial_dst_path,
+        )?;
 
-        ancestor_dst_dir.set_permissions(dst_path, metadata.permissions())?;
+        if let Some(permissions) = metadata.permissions() {
+            ancestor_dst_dir.set_permissions(dst_path, permissions)?;
+        }
     }
 
     Ok(())
 }
 
-fn copy_recursive_internal(entries: Vec<DirEntry>, src_dir: Dir, dst_dir: Dir) -> Result<()> {
+fn copy_recursive_internal(
+    entries: Vec<VfsDirEntry>,
+    src_dir: VfsDir,
+    dst_dir: VfsDir,
+    current_src_path: &Path,
+    initial_dst_path: &Path,
+) -> Result<()> {
     for entry in entries {
+        let current_src_path = current_src_path.join(entry.file_name());
+
+        if current_src_path == initial_dst_path {
+            continue;
+        }
+
         let file_name = entry.file_name();
 
         let file_name = Path::new(&file_name);
 
         let metadata = entry.metadata()?;
 
-        copy_recursive_unknown(&src_dir, file_name, &dst_dir, file_name, metadata)?;
+        copy_recursive_unknown(
+            &src_dir,
+            file_name,
+            &dst_dir,
+            file_name,
+            metadata,
+            &current_src_path,
+            initial_dst_path,
+        )?;
     }
 
     Ok(())

@@ -32,17 +32,15 @@ impl Filesystem {
         data: Arc<FilesystemData>,
         Parameters(MkdirParams { path, parents }): Parameters<MkdirParams>,
     ) -> Result<String> {
-        let (dir, rel_path) = data.get_dir(&path)?;
-
         let parents = parents.unwrap_or(false);
 
         if parents {
-            dir.dir
-                .create_dir_all(rel_path)
+            data.dir
+                .create_dir_all(&path)
                 .context("Failed to create the directory with parents")?;
         } else {
-            dir.dir
-                .create_dir(rel_path)
+            data.dir
+                .create_dir(&path)
                 .context("Failed to create the directory")?;
         }
 
@@ -67,7 +65,7 @@ mod tests {
 
         assert_eq!(result, "Successfully created the directory");
 
-        assert!(data.dirs[0].dir.exists("new_dir"));
+        assert!(data.dir.exists("new_dir"));
 
         Ok(())
     }
@@ -133,7 +131,7 @@ mod tests {
     fn test_mkdir_existing_dir(parents: Option<bool>) -> Result<String> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("existing_dir")?;
+        data.dir.create_dir("existing_dir")?;
 
         let params = Parameters(MkdirParams {
             path: "existing_dir".to_string(),
