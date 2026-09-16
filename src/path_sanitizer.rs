@@ -90,7 +90,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_sanitize_path_prefix_invalid() -> Result<()> {
-        let result = sanitize_path("C:\\valid\\path")?;
+        let result = sanitize_path("C:\\valid\\path");
 
         assert!(result.is_err());
 
