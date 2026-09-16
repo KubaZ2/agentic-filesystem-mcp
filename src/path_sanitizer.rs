@@ -90,6 +90,8 @@ mod tests {
             sanitize_path("C:\\valid\\path")?,
             Path::new("C:\\valid\\path")
         );
+
+        Ok(())
     }
 
     #[test]
