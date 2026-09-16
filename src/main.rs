@@ -1,14 +1,8 @@
-use std::{
-    collections::HashMap,
-    ffi::OsString,
-    io::Write,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::HashMap, ffi::OsString, io::Write, path::Path, sync::Arc};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use cap_std::{ambient_authority, fs::Dir};
-use clap::Parser;
+use clap::{ArgAction, ArgGroup, Parser};
 use grep::printer::{Standard, Summary};
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -22,7 +16,10 @@ use tokio::{
     task::spawn_blocking,
 };
 
-use crate::fs::{VfsDir, VfsDirBuilder};
+use crate::{
+    fs::{VfsDir, VfsDirBuilder},
+    path_sanitizer::sanitize_path,
+};
 
 mod copy;
 mod fs;
@@ -31,54 +28,63 @@ mod tools;
 mod walk;
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(
+    version,
+    about,
+    long_about = None,
+    group(ArgGroup::new("mode").required(true).args(["root", "mount"])))]
 struct Args {
-    /// The root paths to serve
-    #[arg(long, num_args = 1..)]
-    root: Vec<OsString>,
+    /// The root path to serve
+    #[arg(long, value_name = "ROOT_PATH")]
+    root: Option<OsString>,
 
-    /// Whether to use absolute paths instead of relative paths
-    #[arg(long, default_value_t = false)]
-    absolute_paths: bool,
+    /// The mount points to serve
+    #[arg(long, num_args = 2, action = ArgAction::Append, value_names = ["MOUNT_POINT", "ROOT_PATH"])]
+    mount: Option<Vec<OsString>>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let paths = args.root;
+    let dir = match (args.root, args.mount) {
+        (Some(root), None) => {
+            let dir = open_dir(root.as_ref())?;
 
-    if paths.is_empty() {
-        bail!("No paths provided");
-    }
+            VfsDirBuilder::from_root(dir).build()
+        }
+        (None, Some(mount)) => {
+            let mut builder = VfsDirBuilder::new();
 
-    let abs_paths = paths
-        .iter()
-        .map(|p| {
-            PathBuf::from(p)
-                .canonicalize()
-                .with_context(|| format!("Error resolving absolute path for {}", p.display()))
-        })
-        .collect::<Result<Vec<PathBuf>>>()?;
+            let (chunks, []) = mount.as_chunks::<2>() else {
+                unreachable!(
+                    "Clap should ensure that --mount is specified in pairs of mount point and root path"
+                );
+            };
 
-    let root_path = if args.absolute_paths {
-        None
-    } else {
-        get_root_path(&abs_paths)?
+            for chunk in chunks {
+                let mount_point = &chunk[0];
+                let root_path = &chunk[1];
+
+                let dir = open_dir(root_path.as_ref())?;
+
+                let mount_path = sanitize_path(mount_point)?;
+
+                builder.mount_dir(mount_path, dir)?;
+            }
+
+            builder.build()
+        }
+        _ => unreachable!(
+            "Clap should ensure that either --root or --mount is specified, but not both"
+        ),
     };
-
-    log_info(&format!(
-        "Root path: {}",
-        root_path
-            .as_ref()
-            .map_or("None".to_string(), |p| p.display().to_string())
-    ));
-
-    let dir = get_dir(&abs_paths, root_path.as_deref())?;
 
     let filesystem = Filesystem::new(dir);
 
     let service = filesystem.serve((stdin(), stdout())).await?;
+
+    log_info("Started...");
 
     service.waiting().await?;
 
@@ -88,47 +94,6 @@ async fn main() -> Result<()> {
 fn open_dir(path: &Path) -> Result<Dir> {
     Dir::open_ambient_dir(path, ambient_authority())
         .with_context(|| format!("Error opening directory {}", path.display()))
-}
-
-fn get_dir(abs_paths: &[PathBuf], root_path: Option<&Path>) -> Result<VfsDir> {
-    if abs_paths.len() == 1
-        && let Some(root_path) = root_path
-        && abs_paths[0] == root_path
-    {
-        let dir = open_dir(root_path)?;
-
-        return Ok(VfsDirBuilder::from_root(dir).build());
-    }
-
-    let mut builder = VfsDirBuilder::new();
-
-    for abs_path in abs_paths {
-        let dir = open_dir(abs_path)?;
-
-        let path = match root_path {
-            Some(root_path) => abs_path.strip_prefix(root_path)?,
-            None => abs_path,
-        };
-
-        builder.mount_dir(path, dir)?;
-    }
-
-    Ok(builder.build())
-}
-
-fn get_root_path(paths: &[PathBuf]) -> Result<Option<PathBuf>> {
-    let mut root: &Path = &paths[0];
-
-    for path in paths.iter().skip(1) {
-        while !path.starts_with(root) {
-            match root.parent() {
-                Some(parent) => root = parent,
-                None => return Ok(None),
-            }
-        }
-    }
-
-    Ok(Some(root.to_path_buf()))
 }
 
 fn log_info(message: &str) {
@@ -263,71 +228,5 @@ impl Filesystem {
             "'{}' handled an unexpected error: {:#}",
             tool, err
         ));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn get_empty_path() -> PathBuf {
-        #[cfg(windows)]
-        {
-            PathBuf::from("C:\\")
-        }
-
-        #[cfg(not(windows))]
-        {
-            PathBuf::from("/")
-        }
-    }
-
-    #[test]
-    fn test_get_root_path_empty_root() -> Result<()> {
-        let root_path = get_empty_path();
-
-        let abs_paths = vec![
-            root_path.join("dir_a/dir_b"),
-            root_path.join("dir_a"),
-            root_path.join("dir_c"),
-        ];
-
-        let root = get_root_path(&abs_paths)?;
-
-        assert_eq!(root, Some(root_path.to_path_buf()));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_root_path_nested_root() -> Result<()> {
-        let root_path = get_empty_path();
-
-        let abs_paths = vec![
-            root_path.join("some/nested/dir/dir_a/dir_b"),
-            root_path.join("some/nested/dir/dir_a"),
-            root_path.join("some/nested/dir/dir_c"),
-        ];
-
-        let root = get_root_path(&abs_paths)?;
-
-        assert_eq!(root, Some(root_path.join("some/nested/dir")));
-
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_get_root_path_no_common_root() -> Result<()> {
-        let path_a = PathBuf::from("C:\\dir_a\\dir_b");
-        let path_b = PathBuf::from("D:\\dir_c");
-
-        let abs_paths = vec![path_a, path_b];
-
-        let root = get_root_path(&abs_paths)?;
-
-        assert_eq!(root, None);
-
-        Ok(())
     }
 }

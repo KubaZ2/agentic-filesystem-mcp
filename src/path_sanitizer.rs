@@ -9,7 +9,10 @@ where
 
     for component in path.components() {
         match component {
-            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {}
+            Component::Normal(_) => {}
+            Component::RootDir | Component::Prefix(_) => {
+                bail!("Path cannot contain root or prefix components: {:?}", path);
+            }
             Component::CurDir | Component::ParentDir => {
                 bail!(
                     "Path cannot contain '..' or leading '.' components: {:?}",
@@ -68,8 +71,9 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_path_root_dir_valid() -> Result<()> {
-        assert_eq!(sanitize_path("/valid/path")?, Path::new("/valid/path"));
+    fn test_sanitize_path_root_dir_invalid() -> Result<()> {
+        let result = sanitize_path("/invalid/path");
+        assert!(result.is_err());
 
         Ok(())
     }
@@ -85,11 +89,10 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn test_sanitize_path_prefix_valid() -> Result<()> {
-        assert_eq!(
-            sanitize_path("C:\\valid\\path")?,
-            Path::new("C:\\valid\\path")
-        );
+    fn test_sanitize_path_prefix_invalid() -> Result<()> {
+        let result = sanitize_path("C:\\valid\\path")?;
+
+        assert!(result.is_err());
 
         Ok(())
     }
