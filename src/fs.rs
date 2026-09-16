@@ -155,137 +155,63 @@ impl VfsDir {
         let mut components = path.components();
 
         let Some(first) = components.next() else {
-            bail!("Path is empty");
+            bail!("Internal error: routed empty path");
         };
 
         if let Some(child) = vdir.children.get(first.as_os_str()) {
             f(child, components.as_path())
         } else {
-            bail!("Path not found in virtual directory");
+            bail!("No such file or directory");
         }
     }
 
     pub fn exists<P: AsRef<Path>>(&self, path: P) -> bool {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
-            return true; // The directory itself exists
+            return false;
+        }
+        self.inner_exists(path)
+    }
+
+    fn inner_exists(&self, path: &Path) -> bool {
+        if path.as_os_str().is_empty() {
+            return true;
         }
         match self {
             VfsDir::Real(dir) => dir.exists(path),
             VfsDir::Virtual(_) => self
-                .route_virtual(path, |c, p| Ok(c.exists(p)))
+                .route_virtual(path, |c, p| Ok(c.inner_exists(p)))
                 .unwrap_or(false),
-        }
-    }
-
-    pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(
-        &self,
-        from: P,
-        to_dir: &Self,
-        to: Q,
-    ) -> Result<()> {
-        let from = from.as_ref();
-        let to = to.as_ref();
-
-        if from.as_os_str().is_empty() {
-            bail!("Cannot rename a virtual root or mount point itself");
-        }
-
-        if to.as_os_str().is_empty() {
-            bail!("Cannot rename to a virtual root or mount point itself");
-        }
-
-        match (self, to_dir) {
-            (VfsDir::Real(from_dir), VfsDir::Real(to_dir)) => {
-                from_dir.rename(from, to_dir, to)?;
-                Ok(())
-            }
-            (VfsDir::Virtual(_), _) => self.route_virtual(from, |c, p| c.rename(p, to_dir, to)),
-            (VfsDir::Real(_), VfsDir::Virtual(_)) => {
-                to_dir.route_virtual(to, |c, p| self.rename(from, c, p))
-            }
-        }
-    }
-
-    pub fn open<P: AsRef<Path>>(&self, path: P) -> Result<File> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Cannot open a directory as a file");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.open(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.open(p)),
-        }
-    }
-
-    pub fn open_with<P: AsRef<Path>>(&self, path: P, options: &OpenOptions) -> Result<File> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Cannot open a directory as a file");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.open_with(path, options)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.open_with(p, options)),
         }
     }
 
     pub fn open_dir<P: AsRef<Path>>(&self, path: P) -> Result<VfsDir> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_open_dir(path)
+    }
+
+    fn inner_open_dir(&self, path: &Path) -> Result<VfsDir> {
+        if path.as_os_str().is_empty() {
             return Ok(self.clone());
         }
         match self {
             VfsDir::Real(dir) => Ok(VfsDir::Real(Arc::new(dir.open_dir(path)?))),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.open_dir(p)),
-        }
-    }
-
-    pub fn create_dir<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Directory already exists");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.create_dir(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.create_dir(p)),
-        }
-    }
-
-    pub fn create_dir_all<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            return Ok(());
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.create_dir_all(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.create_dir_all(p)),
-        }
-    }
-
-    pub fn create<P: AsRef<Path>>(&self, path: P) -> Result<File> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Cannot create a file without a filename");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.create(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.create(p)),
-        }
-    }
-
-    pub fn write<P: AsRef<Path>, C: AsRef<[u8]>>(&self, path: P, data: C) -> Result<()> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Cannot write to a directory");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.write(path, data)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.write(p, data.as_ref())),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_open_dir(p)),
         }
     }
 
     pub fn read_dir<P: AsRef<Path>>(&self, path: P) -> Result<Vec<Result<VfsDirEntry>>> {
         let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_read_dir(path)
+    }
+
+    fn inner_read_dir(&self, path: &Path) -> Result<Vec<Result<VfsDirEntry>>> {
         if path.as_os_str().is_empty() {
             return self.entries();
         }
@@ -297,72 +223,410 @@ impl VfsDir {
                     .map(|e| Ok(VfsDirEntry::Real(e?)))
                     .collect())
             }
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.read_dir(p)),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_read_dir(p)),
         }
     }
 
-    pub fn remove_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    pub fn metadata<P: AsRef<Path>>(&self, path: P) -> Result<VfsMetadata> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
-            bail!("Cannot remove a directory as a file");
+            bail!("No such file or directory");
+        }
+        self.inner_metadata(path)
+    }
+
+    fn inner_metadata(&self, path: &Path) -> Result<VfsMetadata> {
+        if path.as_os_str().is_empty() {
+            return match self {
+                VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.dir_metadata()?)),
+                VfsDir::Virtual(_) => Ok(VfsMetadata::Virtual),
+            };
         }
         match self {
-            VfsDir::Real(dir) => Ok(dir.remove_file(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.remove_file(p)),
+            VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.metadata(path)?)),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_metadata(p)),
         }
     }
 
-    pub fn remove_dir<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    pub fn symlink_metadata<P: AsRef<Path>>(&self, path: P) -> Result<VfsMetadata> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
-            bail!("Cannot remove a virtual root or mount point itself");
+            bail!("No such file or directory");
+        }
+        self.inner_symlink_metadata(path)
+    }
+
+    fn inner_symlink_metadata(&self, path: &Path) -> Result<VfsMetadata> {
+        if path.as_os_str().is_empty() {
+            return match self {
+                VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.dir_metadata()?)),
+                VfsDir::Virtual(_) => Ok(VfsMetadata::Virtual),
+            };
         }
         match self {
-            VfsDir::Real(dir) => Ok(dir.remove_dir(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.remove_dir(p)),
+            VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.symlink_metadata(path)?)),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_symlink_metadata(p)),
         }
     }
 
-    pub fn remove_dir_all<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    pub fn open<P: AsRef<Path>>(&self, path: P) -> Result<File> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
-            bail!("Cannot remove a virtual root or mount point itself");
+            bail!("No such file or directory");
+        }
+        self.inner_open(path)
+    }
+
+    fn inner_open(&self, path: &Path) -> Result<File> {
+        if path.as_os_str().is_empty() {
+            bail!("Is a directory");
         }
         match self {
-            VfsDir::Real(dir) => Ok(dir.remove_dir_all(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.remove_dir_all(p)),
+            VfsDir::Real(dir) => Ok(dir.open(path)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_open(p)),
+        }
+    }
+
+    pub fn open_with<P: AsRef<Path>>(&self, path: P, options: &OpenOptions) -> Result<File> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_open_with(path, options)
+    }
+
+    fn inner_open_with(&self, path: &Path, options: &OpenOptions) -> Result<File> {
+        if path.as_os_str().is_empty() {
+            bail!("Is a directory");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.open_with(path, options)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_open_with(p, options)),
         }
     }
 
     pub fn read<P: AsRef<Path>>(&self, path: P) -> Result<Vec<u8>> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
-            bail!("Cannot read a directory as a file");
+            bail!("No such file or directory");
+        }
+        self.inner_read(path)
+    }
+
+    fn inner_read(&self, path: &Path) -> Result<Vec<u8>> {
+        if path.as_os_str().is_empty() {
+            bail!("Is a directory");
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.read(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.read(p)),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_read(p)),
         }
     }
 
     pub fn read_to_string<P: AsRef<Path>>(&self, path: P) -> Result<String> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
-            bail!("Cannot read a directory as a file");
+            bail!("No such file or directory");
+        }
+        self.inner_read_to_string(path)
+    }
+
+    fn inner_read_to_string(&self, path: &Path) -> Result<String> {
+        if path.as_os_str().is_empty() {
+            bail!("Is a directory");
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.read_to_string(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.read_to_string(p)),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_read_to_string(p)),
         }
     }
 
-    pub fn set_mtime(&self, path: &Path, mtime: SystemTimeSpec) -> Result<()> {
+    pub fn write<P: AsRef<Path>, C: AsRef<[u8]>>(&self, path: P, data: C) -> Result<()> {
+        let path = path.as_ref();
         if path.as_os_str().is_empty() {
-            bail!("Cannot set mtime on a virtual root or mount point itself");
+            bail!("No such file or directory");
+        }
+        self.inner_write(path, data.as_ref())
+    }
+
+    fn inner_write(&self, path: &Path, data: &[u8]) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            bail!("Is a directory");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.write(path, data)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_write(p, data)),
+        }
+    }
+
+    pub fn create<P: AsRef<Path>>(&self, path: P) -> Result<File> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_create(path)
+    }
+
+    fn inner_create(&self, path: &Path) -> Result<File> {
+        if path.as_os_str().is_empty() {
+            bail!("Is a directory");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.create(path)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_create(p)),
+        }
+    }
+
+    pub fn read_link_contents<P: AsRef<Path>>(&self, path: P) -> Result<PathBuf> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_read_link_contents(path)
+    }
+
+    fn inner_read_link_contents(&self, path: &Path) -> Result<PathBuf> {
+        if path.as_os_str().is_empty() {
+            bail!("Invalid argument");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.read_link_contents(path)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_read_link_contents(p)),
+        }
+    }
+
+    pub fn create_dir<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_create_dir(path)
+    }
+
+    fn inner_create_dir(&self, path: &Path) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            bail!("File exists");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.create_dir(path)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_create_dir(p)),
+        }
+    }
+
+    pub fn create_dir_all<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_create_dir_all(path)
+    }
+
+    fn inner_create_dir_all(&self, path: &Path) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.create_dir_all(path)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_create_dir_all(p)),
+        }
+    }
+
+    pub fn remove_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_remove_file(path)
+    }
+
+    fn inner_remove_file(&self, path: &Path) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            bail!("Is a directory");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.remove_file(path)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_remove_file(p)),
+        }
+    }
+
+    pub fn remove_dir<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_remove_dir(path)
+    }
+
+    fn inner_remove_dir(&self, path: &Path) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            bail!("Device or resource busy");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.remove_dir(path)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_remove_dir(p)),
+        }
+    }
+
+    pub fn remove_dir_all<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_remove_dir_all(path)
+    }
+
+    fn inner_remove_dir_all(&self, path: &Path) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            bail!("Device or resource busy");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.remove_dir_all(path)?),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_remove_dir_all(p)),
+        }
+    }
+
+    pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(
+        &self,
+        from: P,
+        to_dir: &Self,
+        to: Q,
+    ) -> Result<()> {
+        let from = from.as_ref();
+        let to = to.as_ref();
+        if from.as_os_str().is_empty() || to.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_rename(from, to_dir, to)
+    }
+
+    fn inner_rename(&self, from: &Path, to_dir: &Self, to: &Path) -> Result<()> {
+        if from.as_os_str().is_empty() || to.as_os_str().is_empty() {
+            bail!("Device or resource busy");
+        }
+        match (self, to_dir) {
+            (VfsDir::Real(from_dir), VfsDir::Real(to_dir)) => {
+                from_dir.rename(from, to_dir, to)?;
+                Ok(())
+            }
+            (VfsDir::Virtual(_), _) => {
+                self.route_virtual(from, |c, p| c.inner_rename(p, to_dir, to))
+            }
+            (VfsDir::Real(_), VfsDir::Virtual(_)) => {
+                to_dir.route_virtual(to, |c, p| self.inner_rename(from, c, p))
+            }
+        }
+    }
+
+    pub fn set_mtime<P: AsRef<Path>>(&self, path: P, mtime: SystemTimeSpec) -> Result<()> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_set_mtime(path, mtime)
+    }
+
+    fn inner_set_mtime(&self, path: &Path, mtime: SystemTimeSpec) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            bail!("Operation not permitted");
         }
         match self {
             VfsDir::Real(dir) => Ok(dir.set_mtime(path, mtime)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.set_mtime(p, mtime)),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.inner_set_mtime(p, mtime)),
+        }
+    }
+
+    pub fn set_permissions<P: AsRef<Path>>(&self, path: P, perm: Permissions) -> Result<()> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_set_permissions(path, perm)
+    }
+
+    fn inner_set_permissions(&self, path: &Path, perm: Permissions) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            bail!("Operation not permitted");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.set_permissions(path, perm)?),
+            VfsDir::Virtual(_) => {
+                self.route_virtual(path, |c, p| c.inner_set_permissions(p, perm.clone()))
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn symlink_contents<P: AsRef<Path>, Q: AsRef<Path>>(&self, src: P, dst: Q) -> Result<()> {
+        let src = src.as_ref();
+        let dst = dst.as_ref();
+        if src.as_os_str().is_empty() || dst.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_symlink_contents(src, dst)
+    }
+
+    #[cfg(not(windows))]
+    fn inner_symlink_contents(&self, src: &Path, dst: &Path) -> Result<()> {
+        if src.as_os_str().is_empty() || dst.as_os_str().is_empty() {
+            bail!("Is a directory");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.symlink_contents(src, dst)?),
+            VfsDir::Virtual(_) => self.route_virtual(dst, |c, p| c.inner_symlink_contents(src, p)),
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn symlink_contents_dir<P: AsRef<Path>, Q: AsRef<Path>>(
+        &self,
+        src: P,
+        dst: Q,
+    ) -> Result<()> {
+        let src = src.as_ref();
+        let dst = dst.as_ref();
+        if src.as_os_str().is_empty() || dst.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_symlink_contents_dir(src, dst)
+    }
+
+    #[cfg(windows)]
+    fn inner_symlink_contents_dir(&self, src: &Path, dst: &Path) -> Result<()> {
+        if src.as_os_str().is_empty() || dst.as_os_str().is_empty() {
+            bail!("Is a directory");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.symlink_dir(src, dst)?),
+            VfsDir::Virtual(_) => {
+                self.route_virtual(dst, |c, p| c.inner_symlink_contents_dir(src, p))
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn symlink_contents_file<P: AsRef<Path>, Q: AsRef<Path>>(
+        &self,
+        src: P,
+        dst: Q,
+    ) -> Result<()> {
+        let src = src.as_ref();
+        let dst = dst.as_ref();
+        if src.as_os_str().is_empty() || dst.as_os_str().is_empty() {
+            bail!("No such file or directory");
+        }
+        self.inner_symlink_contents_file(src, dst)
+    }
+
+    #[cfg(windows)]
+    fn inner_symlink_contents_file(&self, src: &Path, dst: &Path) -> Result<()> {
+        if src.as_os_str().is_empty() || dst.as_os_str().is_empty() {
+            bail!("Is a directory");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(dir.symlink_file(src, dst)?),
+            VfsDir::Virtual(_) => {
+                self.route_virtual(dst, |c, p| c.inner_symlink_contents_file(src, p))
+            }
         }
     }
 
@@ -393,102 +657,6 @@ impl VfsDir {
                     })
                     .collect();
                 Ok(entries)
-            }
-        }
-    }
-
-    pub fn metadata<P: AsRef<Path>>(&self, path: P) -> Result<VfsMetadata> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Cannot get metadata for a virtual root or mount point itself");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.metadata(path)?)),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.metadata(p)),
-        }
-    }
-
-    pub fn symlink_metadata<P: AsRef<Path>>(&self, path: P) -> Result<VfsMetadata> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Cannot get symlink metadata for a virtual root or mount point itself");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.symlink_metadata(path)?)),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.symlink_metadata(p)),
-        }
-    }
-
-    pub fn read_link_contents<P: AsRef<Path>>(&self, path: P) -> Result<PathBuf> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Cannot read a directory as a symlink");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.read_link_contents(path)?),
-            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.read_link_contents(p)),
-        }
-    }
-
-    pub fn set_permissions<P: AsRef<Path>>(&self, path: P, perm: Permissions) -> Result<()> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            bail!("Cannot set permissions directly on a virtual root or mount point");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.set_permissions(path, perm)?),
-            VfsDir::Virtual(_) => {
-                self.route_virtual(path, |c, p| c.set_permissions(p, perm.clone()))
-            }
-        }
-    }
-
-    #[cfg(not(windows))]
-    pub fn symlink_contents<P: AsRef<Path>, Q: AsRef<Path>>(&self, src: P, dst: Q) -> Result<()> {
-        let dst = dst.as_ref();
-        if dst.as_os_str().is_empty() {
-            bail!("Cannot create a symlink without a filename");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.symlink_contents(src, dst)?),
-            VfsDir::Virtual(_) => {
-                self.route_virtual(dst, |c, p| c.symlink_contents(src.as_ref(), p))
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    pub fn symlink_contents_dir<P: AsRef<Path>, Q: AsRef<Path>>(
-        &self,
-        src: P,
-        dst: Q,
-    ) -> Result<()> {
-        let dst = dst.as_ref();
-        if dst.as_os_str().is_empty() {
-            bail!("Cannot create a symlink without a filename");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.symlink_dir(src, dst)?),
-            VfsDir::Virtual(_) => {
-                self.route_virtual(dst, |c, p| c.symlink_contents_dir(src.as_ref(), p))
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    pub fn symlink_contents_file<P: AsRef<Path>, Q: AsRef<Path>>(
-        &self,
-        src: P,
-        dst: Q,
-    ) -> Result<()> {
-        let dst = dst.as_ref();
-        if dst.as_os_str().is_empty() {
-            bail!("Cannot create a symlink without a filename");
-        }
-        match self {
-            VfsDir::Real(dir) => Ok(dir.symlink_file(src, dst)?),
-            VfsDir::Virtual(_) => {
-                self.route_virtual(dst, |c, p| c.symlink_contents_file(src.as_ref(), p))
             }
         }
     }

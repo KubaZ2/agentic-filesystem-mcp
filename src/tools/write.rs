@@ -32,7 +32,9 @@ impl Filesystem {
     ) -> Result<String> {
         let path = sanitize_path(&path)?;
 
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
             data.dir
                 .create_dir_all(parent)
                 .context("Failed to create parent directories for the file")?;

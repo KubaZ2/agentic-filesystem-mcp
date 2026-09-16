@@ -66,7 +66,7 @@ impl Filesystem {
             .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", path.display()))?;
 
         let dir = match path.parent() {
-            Some(parent) => {
+            Some(parent) if !parent.as_os_str().is_empty() => {
                 let dir = data
                     .dir
                     .open_dir(parent)
@@ -79,7 +79,7 @@ impl Filesystem {
                     }
                 }
             }
-            None => match data.dir {
+            _ => match data.dir {
                 VfsDir::Real(ref real_dir) => real_dir.clone(),
                 VfsDir::Virtual(_) => {
                     bail!("Cannot open parent directory of virtual file");
