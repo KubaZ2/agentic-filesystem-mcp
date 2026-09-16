@@ -411,13 +411,21 @@ impl VfsDir {
         }
     }
 
+    pub fn metadata<P: AsRef<Path>>(&self, path: P) -> Result<VfsMetadata> {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            bail!("Cannot get metadata for a virtual root or mount point itself");
+        }
+        match self {
+            VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.metadata(path)?)),
+            VfsDir::Virtual(_) => self.route_virtual(path, |c, p| c.metadata(p)),
+        }
+    }
+
     pub fn symlink_metadata<P: AsRef<Path>>(&self, path: P) -> Result<VfsMetadata> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
-            return match self {
-                VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.dir_metadata()?)),
-                VfsDir::Virtual(_) => Ok(VfsMetadata::Virtual),
-            };
+            bail!("Cannot get symlink metadata for a virtual root or mount point itself");
         }
         match self {
             VfsDir::Real(dir) => Ok(VfsMetadata::Real(dir.symlink_metadata(path)?)),
