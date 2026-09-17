@@ -96,6 +96,8 @@ Permissions: {permissions_str}",
 
 #[cfg(test)]
 mod tests {
+    use cap_fs_ext::OpenOptions;
+
     use super::*;
     use std::ffi::OsStr;
     use std::time::{Duration, UNIX_EPOCH};
@@ -115,7 +117,9 @@ mod tests {
         let actual_created: DateTime<Utc>;
 
         {
-            let cap_file = data.dir.open(path)?;
+            let cap_file = data
+                .dir
+                .open_with(path, OpenOptions::new().read(true).write(true))?;
             let std_file = cap_file.into_std();
 
             let times = std::fs::FileTimes::new()
@@ -197,7 +201,9 @@ mod tests {
         data.dir.write(path, "content")?;
 
         {
-            let cap_file = data.dir.open(path)?;
+            let cap_file = data
+                .dir
+                .open_with(path, OpenOptions::new().read(true).write(true))?;
             let std_file = cap_file.into_std();
 
             let mut perms = std_file.metadata()?.permissions();
