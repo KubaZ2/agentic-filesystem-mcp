@@ -17,7 +17,7 @@ Download the latest release from [Releases](https://github.com/KubaZ2/agentic-fi
 
 ## 🛠️ Usage
 
-Start the server by providing one or more root directories you want the agent to have access to.
+Start the server by providing the root directory or mount points you want the agent to have access to.
 
 ```bash
 agentic-filesystem-mcp [OPTIONS]
@@ -25,23 +25,61 @@ agentic-filesystem-mcp [OPTIONS]
 
 **Options:**
 
-* `--root <PATHS>...`: The root paths the server will serve and sandbox, required.
+* `--root <ROOT_PATH>`: A single root path the server will serve and sandbox. Mutually exclusive with `--mount`.
 
-* `--absolute-paths`: By default, the server determines a common root and uses relative paths. Flag this to force the use of absolute paths instead.
+* `--mount <MOUNT_POINT> <ROOT_PATH>`: One or more mount points, each mapping a virtual path to a root directory. Can be specified multiple times. Mutually exclusive with `--root`.
 
-**Examples:**
+### Path Resolution Examples
 
-```bash
-agentic-filesystem-mcp --root /path/to/project
-```
+#### Using `--root`
 
-```bash
-agentic-filesystem-mcp --absolute-paths --root /path/to/project
-```
+The `--root` option sets a single directory as the root of the server. The agent accesses files directly via their relative paths within this directory. You can also use relative paths, such as `.`, to serve your current working directory.
+
+##### Example: Serving the current directory
 
 ```bash
-agentic-filesystem-mcp --root /path/to/project/src /path/to/project/docs
+agentic-filesystem-mcp --root .
 ```
+If your current directory contains `main.py` and `src/index.ts`, the agent accesses them as:
+* `main.py`
+* `src/index.ts`
+
+##### Example: Serving an absolute path
+
+```bash
+agentic-filesystem-mcp --root /var/www/my-app
+```
+If `/var/www/my-app` contains `app.js` and `components/Button.tsx`, they are accessible as:
+* `app.js`
+* `components/Button.tsx`
+
+#### Using `--mount`
+
+The `--mount` option maps physical directories to virtual mount points, allowing you to securely expose multiple distinct directories to the agent at once.
+
+##### Example: Multiple distinct mounts
+
+```bash
+agentic-filesystem-mcp --mount frontend /var/www/react-app --mount backend /opt/api-server
+```
+If `/var/www/react-app` contains `package.json` and `/opt/api-server` contains `main.py`, the agent accesses them as:
+* `frontend/package.json`
+* `backend/main.py`
+
+##### Example: Nested mount points
+
+You can specify highly nested virtual paths as mount points and safely overlap them to build complex, unified virtual file trees.
+
+```bash
+agentic-filesystem-mcp \
+  --mount workspaces/frontend /home/user/projects/web \
+  --mount workspaces/backend/main-api /home/user/projects/server \
+  --mount workspaces/backend/worker /home/user/projects/cron
+```
+In this example, the agent sees a single virtual `workspaces` directory and accesses the files like this:
+* `workspaces/frontend/index.html`
+* `workspaces/backend/main-api/app.py`
+* `workspaces/backend/worker/tasks.py`
 
 ### Tools
 
@@ -127,7 +165,7 @@ agentic-filesystem-mcp --root /path/to/project/src /path/to/project/docs
 
 ## 🔐 Security Architecture
 
-This server relies heavily on `cap_std::fs::Dir`. When root paths are passed to the server, it opens them as "ambient directories". All subsequent tool executions are mapped to these capability objects.
+This server relies heavily on `cap_std::fs::Dir`. Root directories are opened as "ambient directories" and all subsequent tool executions are mapped to these capability objects.
 
 If an agent attempts to access `/etc/passwd` or `../../../../ssh/id_rsa` while the server was restricted to `./my_project`, the operation will fail at the sandbox level. Symlinks are safely evaluated and resolved relative by the sandbox.
 

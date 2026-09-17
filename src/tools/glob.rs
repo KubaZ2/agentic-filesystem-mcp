@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BinaryHeap, path::Path, sync::Arc};
+use std::{cmp::Reverse, collections::BinaryHeap, sync::Arc};
 
 use anyhow::{Context, Result};
 use ignore::overrides::OverrideBuilder;
@@ -8,7 +8,8 @@ use rmcp::{
 
 use crate::{
     Filesystem, FilesystemData,
-    cap_ignore_walker::{CapIgnoreWalker, RunEntry},
+    path_sanitizer::sanitize_path_option,
+    walk::{self, RunEntry},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -18,9 +19,7 @@ struct GlobParams {
     )]
     pattern: String,
 
-    #[schemars(
-        description = "The directory to search in.\n\nDefaults to `\".\"` if not specified."
-    )]
+    #[schemars(description = "The directory to search in.\n\nDefaults to empty if not specified.")]
     path: Option<String>,
 
     #[schemars(
@@ -53,12 +52,9 @@ impl Filesystem {
             offset,
         }): Parameters<GlobParams>,
     ) -> Result<String> {
-        let dirs = data.get_search_dirs(&path)?;
+        let path = sanitize_path_option(path.as_deref())?;
 
-        let mut override_builder = OverrideBuilder::new(
-            path.as_ref()
-                .map_or_else(|| Path::new("."), |p| Path::new(p)),
-        );
+        let mut override_builder = OverrideBuilder::new(path);
 
         override_builder
             .add(&pattern)
@@ -67,8 +63,6 @@ impl Filesystem {
         let r#override = override_builder
             .build()
             .context("Failed to build glob override")?;
-
-        let walk = CapIgnoreWalker::new(vec![r#override], dirs);
 
         let offset = offset.unwrap_or(0);
         let limit = limit.unwrap_or(Self::DEFAULT_LIMIT);
@@ -79,7 +73,7 @@ impl Filesystem {
 
         let mut results = BinaryHeap::new();
 
-        walk.run(|entry| {
+        walk::run(&[r#override], &data.dir, path, |entry| {
             let (entry, entry_path) = match entry {
                 RunEntry::Match(entry, path) => (entry, path),
                 RunEntry::Error(err) => {
@@ -91,15 +85,12 @@ impl Filesystem {
             let modified_time = match entry.metadata().and_then(|metadata| metadata.modified()) {
                 Ok(time) => time,
                 Err(err) => {
-                    Self::log_tool_warning("glob", &anyhow::Error::from(err));
+                    Self::log_tool_warning("glob", &err);
                     return Ok(());
                 }
             };
 
-            let display_path = match path {
-                Some(ref p) => entry_path.strip_prefix(p)?.display().to_string(),
-                None => entry_path.display().to_string(),
-            };
+            let display_path = entry_path.strip_prefix(path)?.display().to_string();
 
             total_results += 1;
 
@@ -146,9 +137,10 @@ mod tests {
     use super::*;
 
     use anyhow::Result;
-    use cap_fs_ext::{DirExt, SystemTimeSpec};
+    use cap_fs_ext::SystemTimeSpec;
     use std::{
         io::Write,
+        path::Path,
         time::{Duration, SystemTime},
     };
 
@@ -164,10 +156,10 @@ mod tests {
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()
             {
-                data.dirs[0].dir.create_dir_all(parent)?;
+                data.dir.create_dir_all(parent)?;
             }
 
-            let mut file = data.dirs[0].dir.create(file_path)?;
+            let mut file = data.dir.create(file_path)?;
 
             file.write_all(content.as_bytes())?;
 
@@ -178,7 +170,7 @@ mod tests {
                 if ancestor.as_os_str().is_empty() {
                     continue;
                 }
-                data.dirs[0].dir.set_mtime(
+                data.dir.set_mtime(
                     ancestor,
                     SystemTimeSpec::Absolute(cap_primitives::time::SystemTime::from_std(mod_time)),
                 )?;
@@ -455,13 +447,13 @@ mod tests {
     fn test_glob_respects_gitignore() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("ignored_dir")?;
+        data.dir.create_dir("ignored_dir")?;
 
-        data.dirs[0].dir.write("ignored_dir/file.txt", "content")?;
+        data.dir.write("ignored_dir/file.txt", "content")?;
 
-        data.dirs[0].dir.write(".gitignore", "ignored_dir")?;
+        data.dir.write(".gitignore", "ignored_dir")?;
 
-        data.dirs[0].dir.write("kept.txt", "content")?;
+        data.dir.write("kept.txt", "content")?;
 
         let result = Filesystem::try_glob(data.clone(), Parameters(default_glob_params("*.txt")))?;
 

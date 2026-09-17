@@ -5,7 +5,7 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData};
+use crate::{Filesystem, FilesystemData, path_sanitizer::sanitize_path};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct MoveParams {
@@ -33,12 +33,12 @@ impl Filesystem {
         data: Arc<FilesystemData>,
         Parameters(MoveParams { src_path, dst_path }): Parameters<MoveParams>,
     ) -> Result<String> {
-        let (src_dir, rel_src_path) = data.get_dir(&src_path)?;
-        let (dst_dir, rel_dst_path) = data.get_dir(&dst_path)?;
+        let src_path = sanitize_path(&src_path).context("Failed to sanitize the source path")?;
+        let dst_path =
+            sanitize_path(&dst_path).context("Failed to sanitize the destination path")?;
 
-        src_dir
-            .dir
-            .rename(rel_src_path, &dst_dir.dir, rel_dst_path)
+        data.dir
+            .rename(src_path, &data.dir, dst_path)
             .context("Failed to move the file or directory")?;
 
         Ok("Successfully moved the file or directory".to_string())
@@ -54,7 +54,7 @@ mod tests {
     fn test_move_renames_file() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("source.txt", "Hello, world!")?;
+        data.dir.write("source.txt", "Hello, world!")?;
 
         let params = Parameters(MoveParams {
             src_path: "source.txt".to_string(),
@@ -65,9 +65,9 @@ mod tests {
 
         assert_eq!(result, "Successfully moved the file or directory");
 
-        assert!(!data.dirs[0].dir.exists("source.txt"));
+        assert!(!data.dir.exists("source.txt"));
 
-        let content = data.dirs[0].dir.read_to_string("destination.txt")?;
+        let content = data.dir.read_to_string("destination.txt")?;
 
         assert_eq!(content, "Hello, world!");
 
@@ -78,8 +78,8 @@ mod tests {
     fn test_move_file_to_subdirectory() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("subdirectory")?;
-        data.dirs[0].dir.write("source.txt", "Hello, world!")?;
+        data.dir.create_dir("subdirectory")?;
+        data.dir.write("source.txt", "Hello, world!")?;
 
         let params = Parameters(MoveParams {
             src_path: "source.txt".to_string(),
@@ -90,9 +90,9 @@ mod tests {
 
         assert_eq!(result, "Successfully moved the file or directory");
 
-        assert!(!data.dirs[0].dir.exists("source.txt"));
+        assert!(!data.dir.exists("source.txt"));
 
-        let content = data.dirs[0].dir.read_to_string("subdirectory/source.txt")?;
+        let content = data.dir.read_to_string("subdirectory/source.txt")?;
 
         assert_eq!(content, "Hello, world!");
 
@@ -103,10 +103,8 @@ mod tests {
     fn test_move_directory() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("source_dir")?;
-        data.dirs[0]
-            .dir
-            .write("source_dir/inner.txt", "Hello, world!")?;
+        data.dir.create_dir("source_dir")?;
+        data.dir.write("source_dir/inner.txt", "Hello, world!")?;
 
         let params = Parameters(MoveParams {
             src_path: "source_dir".to_string(),
@@ -117,11 +115,9 @@ mod tests {
 
         assert_eq!(result, "Successfully moved the file or directory");
 
-        assert!(!data.dirs[0].dir.exists("source_dir"));
+        assert!(!data.dir.exists("source_dir"));
 
-        let content = data.dirs[0]
-            .dir
-            .read_to_string("destination_dir/inner.txt")?;
+        let content = data.dir.read_to_string("destination_dir/inner.txt")?;
 
         assert_eq!(content, "Hello, world!");
 
@@ -151,8 +147,8 @@ mod tests {
     fn test_move_overwrites_when_destination_exists() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("source.txt", "New content")?;
-        data.dirs[0].dir.write("destination.txt", "Old content")?;
+        data.dir.write("source.txt", "New content")?;
+        data.dir.write("destination.txt", "Old content")?;
 
         let params = Parameters(MoveParams {
             src_path: "source.txt".to_string(),
@@ -163,9 +159,9 @@ mod tests {
 
         assert_eq!(result, "Successfully moved the file or directory");
 
-        assert!(!data.dirs[0].dir.exists("source.txt"));
+        assert!(!data.dir.exists("source.txt"));
 
-        let content = data.dirs[0].dir.read_to_string("destination.txt")?;
+        let content = data.dir.read_to_string("destination.txt")?;
 
         assert_eq!(content, "New content");
 

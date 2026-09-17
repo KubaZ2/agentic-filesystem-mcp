@@ -1,13 +1,13 @@
 use std::{io::Write, sync::Arc};
 
 use aho_corasick::AhoCorasick;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use cap_tempfile::TempFile;
 use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData};
+use crate::{Filesystem, FilesystemData, fs::VfsDir, path_sanitizer::sanitize_path};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EditParams {
@@ -49,9 +49,9 @@ impl Filesystem {
             replace_all,
         }): Parameters<EditParams>,
     ) -> Result<String> {
-        let (dir, rel_path) = data.get_dir(&path)?;
+        let path = sanitize_path(&path)?;
 
-        let mut file = dir.dir.open(rel_path)?;
+        let mut file = data.dir.open(path)?;
 
         let file_permissions = file
             .metadata()
@@ -61,7 +61,33 @@ impl Filesystem {
         let ac =
             AhoCorasick::new([&old_string]).context("Failed to create Aho-Corasick automaton")?;
 
-        let tempfile = TempFile::new(&dir.dir).context("Failed to create a temporary file")?;
+        let Some(file_name) = path.file_name() else {
+            bail!("The specified path does not have a valid file name");
+        };
+
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                let dir = data
+                    .dir
+                    .open_dir(parent)
+                    .context("Failed to open parent directory")?;
+
+                match dir {
+                    VfsDir::Real(ref real_dir) => real_dir.clone(),
+                    VfsDir::Virtual(_) => {
+                        bail!("Cannot open parent directory of virtual file");
+                    }
+                }
+            }
+            _ => match data.dir {
+                VfsDir::Real(ref real_dir) => real_dir.clone(),
+                VfsDir::Virtual(_) => {
+                    bail!("Cannot open parent directory of virtual file");
+                }
+            },
+        };
+
+        let tempfile = TempFile::new(&dir).context("Failed to create a temporary file")?;
 
         let mut writer = std::io::BufWriter::new(tempfile);
 
@@ -110,7 +136,7 @@ impl Filesystem {
         drop(file);
 
         tempfile
-            .replace(rel_path)
+            .replace(file_name)
             .context("Failed to replace the original file with the edited file")?;
 
         Ok(format!(
@@ -122,16 +148,18 @@ impl Filesystem {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use super::*;
     use anyhow::Result;
     use cap_tempfile::TempDir;
 
-    use crate::tools::test_utils::setup_test_fs;
+    use crate::tools::test_utils::{setup_test_fs, setup_virtual_fs};
 
     fn test_edit_single(replace_all: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, World!")?;
+        data.dir.write("test.txt", "Hello, World!")?;
 
         let params = Parameters(EditParams {
             path: "test.txt".to_string(),
@@ -170,9 +198,7 @@ mod tests {
     ) -> Result<(TempDir, Arc<FilesystemData>, Result<String>)> {
         let (tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0]
-            .dir
-            .write("test.txt", "Hello, World! Hello, World!")?;
+        data.dir.write("test.txt", "Hello, World! Hello, World!")?;
 
         let params = Parameters(EditParams {
             path: "test.txt".to_string(),
@@ -221,7 +247,7 @@ mod tests {
             "Successfully edited the file (2 replacement(s) made)"
         );
 
-        let content = data.dirs[0].dir.read_to_string("test.txt")?;
+        let content = data.dir.read_to_string("test.txt")?;
 
         assert_eq!(content, "Hello, Rust! Hello, Rust!");
 
@@ -236,7 +262,7 @@ mod tests {
     fn test_edit_no_matches(replace_all: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, World!")?;
+        data.dir.write("test.txt", "Hello, World!")?;
 
         let params = Parameters(EditParams {
             path: "test.txt".to_string(),
@@ -273,7 +299,7 @@ mod tests {
     fn test_edit_multiline(replace_all: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write(
+        data.dir.write(
             "test.txt",
             "int a = 0;
 int b = 1;
@@ -305,7 +331,7 @@ while (a < 50) {
             "Successfully edited the file (1 replacement(s) made)"
         );
 
-        let content = data.dirs[0].dir.read_to_string("test.txt")?;
+        let content = data.dir.read_to_string("test.txt")?;
 
         assert_eq!(
             content,
@@ -334,5 +360,34 @@ while (a < 50) {
     #[test]
     fn test_edit_multiline_replace_all_false() -> Result<()> {
         test_edit_multiline(Some(false))
+    }
+
+    #[test]
+    fn test_edit_virtual_fs() -> Result<()> {
+        let (_tempdirs, data) = setup_virtual_fs(&[OsStr::new("dir_a")])?;
+
+        let virtual_file_path = "dir_a/test.txt";
+
+        data.dir.write(virtual_file_path, "Hello, World!")?;
+
+        let params = Parameters(EditParams {
+            path: virtual_file_path.to_string(),
+            old_string: "World".to_string(),
+            new_string: "Rust".to_string(),
+            replace_all: None,
+        });
+
+        let result = Filesystem::try_edit(data.clone(), params)?;
+
+        assert_eq!(
+            result,
+            "Successfully edited the file (1 replacement(s) made)"
+        );
+
+        let content = data.dir.read_to_string(virtual_file_path)?;
+
+        assert_eq!(content, "Hello, Rust!");
+
+        Ok(())
     }
 }

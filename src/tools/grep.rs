@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BinaryHeap, path::Path, sync::Arc};
+use std::{cmp::Reverse, collections::BinaryHeap, sync::Arc};
 
 use anyhow::{Context, Result};
 use grep::{
@@ -13,7 +13,8 @@ use rmcp::{
 
 use crate::{
     Filesystem, FilesystemData, GrepPrinter,
-    cap_ignore_walker::{CapIgnoreWalker, RunEntry},
+    path_sanitizer::sanitize_path_option,
+    walk::{self, RunEntry},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Clone, Copy)]
@@ -34,7 +35,7 @@ struct GrepParams {
     pattern: String,
 
     #[schemars(
-        description = "The directory or file to search in.\n\nDefaults to `\".\"` if not specified."
+        description = "The directory or file to search in.\n\nDefaults to empty if not specified."
     )]
     path: Option<String>,
 
@@ -102,15 +103,12 @@ impl Filesystem {
             show_line_numbers,
         }): Parameters<GrepParams>,
     ) -> Result<String> {
-        let dirs = data.get_search_dirs(&path)?;
+        let path = sanitize_path_option(path.as_deref())?;
 
         let mut overrides = Vec::new();
 
         if let Some(glob) = glob {
-            let mut override_builder = OverrideBuilder::new(
-                path.as_ref()
-                    .map_or_else(|| Path::new("."), |p| Path::new(p)),
-            );
+            let mut override_builder = OverrideBuilder::new(path);
 
             override_builder
                 .add(&glob)
@@ -122,8 +120,6 @@ impl Filesystem {
 
             overrides.push(r#override);
         }
-
-        let walk = CapIgnoreWalker::new(overrides, dirs);
 
         let mut matcher_builder = RegexMatcherBuilder::new();
 
@@ -162,7 +158,7 @@ impl Filesystem {
 
         let mut results = BinaryHeap::new();
 
-        walk.run(|entry| {
+        walk::run(&overrides, &data.dir, path, |entry| {
             let (entry, entry_path) = match entry {
                 RunEntry::Match(entry, path) => (entry, path),
                 RunEntry::Error(err) => {
@@ -174,7 +170,7 @@ impl Filesystem {
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
                 Err(err) => {
-                    Self::log_tool_warning("grep", &anyhow::Error::from(err));
+                    Self::log_tool_warning("grep", &err);
                     return Ok(());
                 }
             };
@@ -204,16 +200,13 @@ impl Filesystem {
             let file = match entry.open() {
                 Ok(file) => file,
                 Err(err) => {
-                    Self::log_tool_warning("grep", &anyhow::Error::from(err));
+                    Self::log_tool_warning("grep", &err);
                     return Ok(());
                 }
             }
             .into_std();
 
-            let display_path = match path {
-                Some(ref p) => entry_path.strip_prefix(p)?,
-                None => entry_path,
-            };
+            let display_path = entry_path.strip_prefix(path)?;
 
             if let Err(err) = match printer {
                 GrepPrinter::Standard(ref mut p) => {
@@ -234,7 +227,7 @@ impl Filesystem {
             let modified_time = match metadata.modified() {
                 Ok(time) => time,
                 Err(err) => {
-                    Self::log_tool_warning("grep", &anyhow::Error::from(err));
+                    Self::log_tool_warning("grep", &err);
                     return Ok(());
                 }
             };
@@ -287,7 +280,7 @@ mod tests {
     use super::*;
 
     use anyhow::Result;
-    use cap_fs_ext::{DirExt, SystemTimeSpec};
+    use cap_fs_ext::SystemTimeSpec;
     use std::{
         io::Write,
         time::{Duration, SystemTime},
@@ -299,13 +292,13 @@ mod tests {
 
         for (i, &(name, content)) in files.iter().enumerate() {
             let path = std::path::Path::new(name);
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    data.dirs[0].dir.create_dir_all(parent)?;
-                }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                data.dir.create_dir_all(parent)?;
             }
 
-            let mut file = data.dirs[0].dir.create(name)?;
+            let mut file = data.dir.create(name)?;
             file.write_all(content.as_bytes())?;
 
             let mod_time = now + Duration::from_secs(i as u64);
@@ -315,7 +308,7 @@ mod tests {
                 if ancestor.as_os_str().is_empty() {
                     continue;
                 }
-                data.dirs[0].dir.set_mtime(
+                data.dir.set_mtime(
                     ancestor,
                     SystemTimeSpec::Absolute(cap_primitives::time::SystemTime::from_std(mod_time)),
                 )?;

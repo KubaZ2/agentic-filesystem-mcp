@@ -5,7 +5,11 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_router,
 };
 
-use crate::{Filesystem, FilesystemData, copy::copy_file, copy::copy_recursive};
+use crate::{
+    Filesystem, FilesystemData,
+    copy::{copy_file, copy_recursive},
+    path_sanitizer::sanitize_path,
+};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct CopyParams {
@@ -41,14 +45,15 @@ impl Filesystem {
             recursive,
         }): Parameters<CopyParams>,
     ) -> Result<String> {
-        let (src_dir, rel_src_path) = data.get_dir(&src_path)?;
-        let (dst_dir, rel_dst_path) = data.get_dir(&dst_path)?;
+        let src_path = sanitize_path(&src_path).context("Failed to sanitize the source path")?;
+        let dst_path =
+            sanitize_path(&dst_path).context("Failed to sanitize the destination path")?;
 
         if recursive.unwrap_or(false) {
-            copy_recursive(&src_dir.dir, rel_src_path, &dst_dir.dir, rel_dst_path)
+            copy_recursive(&data.dir, src_path, dst_path)
                 .context("Failed to copy the file or directory recursively")?;
         } else {
-            copy_file(&src_dir.dir, rel_src_path, &dst_dir.dir, rel_dst_path)
+            copy_file(&data.dir, &src_path, &data.dir, &dst_path)
                 .context("Failed to copy the file")?;
         }
 
@@ -68,7 +73,7 @@ mod tests {
     fn test_copy_file(recursive: Option<bool>) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, world!")?;
+        data.dir.write("test.txt", "Hello, world!")?;
 
         let params = Parameters(CopyParams {
             src_path: "test.txt".to_string(),
@@ -80,11 +85,11 @@ mod tests {
 
         assert_eq!(result, "Successfully copied the file or directory");
 
-        let original_content = data.dirs[0].dir.read_to_string("test.txt")?;
+        let original_content = data.dir.read_to_string("test.txt")?;
 
         assert_eq!(original_content, "Hello, world!");
 
-        let copied_content = data.dirs[0].dir.read_to_string("copy.txt")?;
+        let copied_content = data.dir.read_to_string("copy.txt")?;
 
         assert_eq!(copied_content, "Hello, world!");
 
@@ -111,7 +116,7 @@ mod tests {
     ) -> Result<(TempDir, Arc<FilesystemData>, Result<String>)> {
         let (tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("empty_dir")?;
+        data.dir.create_dir("empty_dir")?;
 
         let params = Parameters(CopyParams {
             src_path: "empty_dir".to_string(),
@@ -156,15 +161,9 @@ mod tests {
 
         assert_eq!(result, "Successfully copied the file or directory");
 
-        assert!(data.dirs[0].dir.exists("copy_empty_dir"));
+        assert!(data.dir.exists("copy_empty_dir"));
 
-        assert!(
-            data.dirs[0]
-                .dir
-                .read_dir("copy_empty_dir")?
-                .next()
-                .is_none()
-        );
+        assert!(data.dir.read_dir("copy_empty_dir")?.is_empty());
 
         Ok(())
     }
@@ -173,17 +172,13 @@ mod tests {
     fn test_copy_nested_dirs_with_files_and_empty_dirs_recursive_true() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("src_tree")?;
-        data.dirs[0].dir.create_dir("src_tree/a")?;
-        data.dirs[0].dir.create_dir("src_tree/a/b")?;
-        data.dirs[0].dir.create_dir("src_tree/a/c")?;
+        data.dir.create_dir("src_tree")?;
+        data.dir.create_dir("src_tree/a")?;
+        data.dir.create_dir("src_tree/a/b")?;
+        data.dir.create_dir("src_tree/a/c")?;
 
-        data.dirs[0]
-            .dir
-            .write("src_tree/a/file1.txt", "content A")?;
-        data.dirs[0]
-            .dir
-            .write("src_tree/a/b/file2.txt", "content B")?;
+        data.dir.write("src_tree/a/file1.txt", "content A")?;
+        data.dir.write("src_tree/a/b/file2.txt", "content B")?;
 
         let params = Parameters(CopyParams {
             src_path: "src_tree".to_string(),
@@ -195,18 +190,18 @@ mod tests {
 
         assert_eq!(result, "Successfully copied the file or directory");
 
-        assert!(data.dirs[0].dir.exists("dst_tree"));
-        assert!(data.dirs[0].dir.exists("dst_tree/a"));
-        assert!(data.dirs[0].dir.exists("dst_tree/a/b"));
-        assert!(data.dirs[0].dir.exists("dst_tree/a/c"));
+        assert!(data.dir.exists("dst_tree"));
+        assert!(data.dir.exists("dst_tree/a"));
+        assert!(data.dir.exists("dst_tree/a/b"));
+        assert!(data.dir.exists("dst_tree/a/c"));
 
-        let file1_content = data.dirs[0].dir.read_to_string("dst_tree/a/file1.txt")?;
+        let file1_content = data.dir.read_to_string("dst_tree/a/file1.txt")?;
         assert_eq!(file1_content, "content A");
 
-        let file2_content = data.dirs[0].dir.read_to_string("dst_tree/a/b/file2.txt")?;
+        let file2_content = data.dir.read_to_string("dst_tree/a/b/file2.txt")?;
         assert_eq!(file2_content, "content B");
 
-        assert!(data.dirs[0].dir.read_dir("dst_tree/a/c")?.next().is_none());
+        assert!(data.dir.read_dir("dst_tree/a/c")?.is_empty());
 
         Ok(())
     }
@@ -217,8 +212,8 @@ mod tests {
     ) -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, world!")?;
-        data.dirs[0].dir.write("copy.txt", "Existing file")?;
+        data.dir.write("test.txt", "Hello, world!")?;
+        data.dir.write("copy.txt", "Existing file")?;
 
         let params = Parameters(CopyParams {
             src_path: "test.txt".to_string(),
@@ -258,8 +253,8 @@ mod tests {
     fn test_copy_file_dst_is_dir_fails() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, world!")?;
-        data.dirs[0].dir.create_dir("copy_dir")?;
+        data.dir.write("test.txt", "Hello, world!")?;
+        data.dir.create_dir("copy_dir")?;
 
         let params = Parameters(CopyParams {
             src_path: "test.txt".to_string(),
@@ -281,8 +276,8 @@ mod tests {
     fn test_copy_dir_dst_exists_recursive_true_fails() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("test_dir")?;
-        data.dirs[0].dir.create_dir("copy_test_dir")?;
+        data.dir.create_dir("test_dir")?;
+        data.dir.create_dir("copy_test_dir")?;
 
         let params = Parameters(CopyParams {
             src_path: "test_dir".to_string(),
@@ -304,8 +299,8 @@ mod tests {
     fn test_copy_dir_dst_is_file_recursive_true_fails() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.create_dir("test_dir")?;
-        data.dirs[0].dir.write("copy_test_file", "Existing file")?;
+        data.dir.create_dir("test_dir")?;
+        data.dir.write("copy_test_file", "Existing file")?;
 
         let params = Parameters(CopyParams {
             src_path: "test_dir".to_string(),
@@ -333,18 +328,16 @@ mod tests {
 
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, world!")?;
+        data.dir.write("test.txt", "Hello, world!")?;
 
         #[cfg(not(windows))]
         {
-            data.dirs[0]
-                .dir
-                .symlink_contents("test.txt", "test_symlink")?;
+            data.dir.symlink_contents("test.txt", "test_symlink")?;
         }
 
         #[cfg(windows)]
         {
-            data.dirs[0].dir.symlink_file("test.txt", "test_symlink")?;
+            data.dir.symlink_contents_file("test.txt", "test_symlink")?;
         }
 
         let params = Parameters(CopyParams {
@@ -357,16 +350,16 @@ mod tests {
 
         assert_eq!(result, "Successfully copied the file or directory");
 
-        let original_content = data.dirs[0].dir.read_to_string("test.txt")?;
+        let original_content = data.dir.read_to_string("test.txt")?;
 
         assert_eq!(original_content, "Hello, world!");
 
-        let copied_content = data.dirs[0].dir.read_to_string("copy_symlink")?;
+        let copied_content = data.dir.read_to_string("copy_symlink")?;
 
         assert_eq!(copied_content, "Hello, world!");
 
         assert!(
-            !data.dirs[0]
+            !data
                 .dir
                 .symlink_metadata("copy_symlink")?
                 .file_type()
@@ -390,18 +383,16 @@ mod tests {
     fn test_copy_symlink_recursive_true_copies_links() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0].dir.write("test.txt", "Hello, world!")?;
+        data.dir.write("test.txt", "Hello, world!")?;
 
         #[cfg(not(windows))]
         {
-            data.dirs[0]
-                .dir
-                .symlink_contents("test.txt", "test_symlink")?;
+            data.dir.symlink_contents("test.txt", "test_symlink")?;
         }
 
         #[cfg(windows)]
         {
-            data.dirs[0].dir.symlink_file("test.txt", "test_symlink")?;
+            data.dir.symlink_contents_file("test.txt", "test_symlink")?;
         }
 
         let params = Parameters(CopyParams {
@@ -414,27 +405,23 @@ mod tests {
 
         assert_eq!(result, "Successfully copied the file or directory");
 
-        let original_content = data.dirs[0].dir.read_to_string("test.txt")?;
+        let original_content = data.dir.read_to_string("test.txt")?;
 
         assert_eq!(original_content, "Hello, world!");
 
-        let copied_content = data.dirs[0].dir.read_to_string("copy_symlink")?;
+        let copied_content = data.dir.read_to_string("copy_symlink")?;
 
         assert_eq!(copied_content, "Hello, world!");
 
         assert!(
-            data.dirs[0]
-                .dir
+            data.dir
                 .symlink_metadata("copy_symlink")?
                 .file_type()
                 .is_symlink()
         );
 
         assert_eq!(
-            data.dirs[0]
-                .dir
-                .read_link_contents("copy_symlink")?
-                .as_path(),
+            data.dir.read_link_contents("copy_symlink")?.as_path(),
             "test.txt"
         );
 
@@ -446,8 +433,7 @@ mod tests {
     fn test_copy_symlink_recursive_true_copies_absolute_links() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0]
-            .dir
+        data.dir
             .symlink_contents("/some/absolute/path/test.txt", "test_symlink")?;
 
         let params = Parameters(CopyParams {
@@ -461,18 +447,14 @@ mod tests {
         assert_eq!(result, "Successfully copied the file or directory");
 
         assert!(
-            data.dirs[0]
-                .dir
+            data.dir
                 .symlink_metadata("copy_symlink")?
                 .file_type()
                 .is_symlink()
         );
 
         assert_eq!(
-            data.dirs[0]
-                .dir
-                .read_link_contents("copy_symlink")?
-                .as_path(),
+            data.dir.read_link_contents("copy_symlink")?.as_path(),
             "/some/absolute/path/test.txt"
         );
 
@@ -487,8 +469,7 @@ mod tests {
     fn test_copy_symlink_recursive_true_copies_broken_links() -> Result<()> {
         let (_tempdir, data) = setup_test_fs()?;
 
-        data.dirs[0]
-            .dir
+        data.dir
             .symlink_contents("nonexistent_target.txt", "test_symlink")?;
 
         let params = Parameters(CopyParams {
@@ -502,18 +483,14 @@ mod tests {
         assert_eq!(result, "Successfully copied the file or directory");
 
         assert!(
-            data.dirs[0]
-                .dir
+            data.dir
                 .symlink_metadata("copy_symlink")?
                 .file_type()
                 .is_symlink()
         );
 
         assert_eq!(
-            data.dirs[0]
-                .dir
-                .read_link_contents("copy_symlink")?
-                .as_path(),
+            data.dir.read_link_contents("copy_symlink")?.as_path(),
             "nonexistent_target.txt"
         );
 
