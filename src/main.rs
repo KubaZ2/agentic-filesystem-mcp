@@ -182,7 +182,8 @@ impl Filesystem {
             + Self::tool_router_edit()
             + Self::tool_router_move()
             + Self::tool_router_copy()
-            + Self::tool_router_remove();
+            + Self::tool_router_remove()
+            + Self::tool_router_stat();
 
         Self {
             tool_router,

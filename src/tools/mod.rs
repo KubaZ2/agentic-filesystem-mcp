@@ -6,6 +6,7 @@ pub mod mkdir;
 pub mod r#move;
 pub mod read;
 pub mod remove;
+pub mod stat;
 pub mod write;
 
 #[cfg(test)]

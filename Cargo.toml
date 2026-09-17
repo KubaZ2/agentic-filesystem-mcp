@@ -9,6 +9,7 @@ base64 = "0.23.1"
 cap-fs-ext = "4.0.3"
 cap-std = "4.0.3"
 cap-tempfile = "4.0.3"
+chrono = "0.4.45"
 clap = { version = "4.6.6", features = ["derive"] }
 grep = "0.4.1"
 ignore = "0.4.33"
