@@ -164,9 +164,10 @@ In this example, the agent sees a single virtual `workspaces` directory and acce
     - `recursive` (boolean, optional, default: false): MUST be set to `true` to remove a non-empty directory
 
 - **stat**
-  - Gets information about a file or directory, including its file type, size, creation time, modification time, access time, and permissions
+  - Get information about a file or directory
   - Inputs:
     - `path` (string): The path of the file or directory to get information about
+  - Includes file type, size, creation time, modification time, access time, and permissions
   - Reports symlinks without following them
 
 ## 🔐 Security Architecture
