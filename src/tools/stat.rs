@@ -16,7 +16,9 @@ struct StatParams {
 
 #[tool_router(router = tool_router_stat, vis = "pub")]
 impl Filesystem {
-    #[tool]
+    #[tool(
+        description = "Gets information about a file or directory, including its file type, size, creation time, modification time, access time, and permissions."
+    )]
     async fn stat(&self, parameters: Parameters<StatParams>) -> CallToolResult {
         let data = self.data.clone();
         Self::run_simple("stat", move || Self::try_stat(data, parameters)).await
@@ -28,7 +30,10 @@ impl Filesystem {
     ) -> Result<String> {
         let path = sanitize_path(&path)?;
 
-        let metadata = data.dir.symlink_metadata(path)?;
+        let metadata = data
+            .dir
+            .symlink_metadata(path)
+            .context("Failed to retrieve metadata for the specified path")?;
 
         let metadata = match metadata {
             VfsMetadata::Real(metadata) => metadata,
