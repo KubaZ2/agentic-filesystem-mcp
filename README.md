@@ -29,15 +29,48 @@ agentic-filesystem-mcp [OPTIONS]
 
 * `--mount <MOUNT_POINT> <ROOT_PATH>`: One or more mount points, each mapping a virtual path to a root directory. Can be specified multiple times. Mutually exclusive with `--root`.
 
-**Examples:**
+### Path Resolution Examples
+
+**Using `--root`**
+The `--root` option sets a single directory as the root of the server. The agent accesses files directly via their relative paths within this directory. You can also use relative paths, such as `.`, to serve your current working directory.
 
 ```bash
-agentic-filesystem-mcp --root /path/to/project
+agentic-filesystem-mcp --root .
 ```
+If your current directory contains `main.py` and `src/index.ts`, the agent accesses them as:
+* `main.py`
+* `src/index.ts`
 
 ```bash
-agentic-filesystem-mcp --mount src /path/to/project/src --mount docs /path/to/project/docs
+agentic-filesystem-mcp --root /var/www/my-app
 ```
+If `/var/www/my-app` contains `app.js` and `components/Button.tsx`, they are accessible as:
+* `app.js`
+* `components/Button.tsx`
+
+**Using `--mount`**
+The `--mount` option maps physical directories to virtual mount points, allowing you to securely expose multiple distinct directories to the agent at once.
+
+```bash
+agentic-filesystem-mcp --mount frontend /var/www/react-app --mount backend /opt/api-server
+```
+If `/var/www/react-app` contains `package.json` and `/opt/api-server` contains `main.py`, the agent accesses them as:
+* `frontend/package.json`
+* `backend/main.py`
+
+**Nested Mount Points**
+You can specify highly nested virtual paths as mount points and safely overlap them to build complex, unified virtual file trees.
+
+```bash
+agentic-filesystem-mcp \
+  --mount workspaces/frontend /home/user/projects/web \
+  --mount workspaces/backend/main-api /home/user/projects/server \
+  --mount workspaces/backend/worker /home/user/projects/cron
+```
+In this example, the agent sees a single virtual `workspaces` directory and accesses the files like this:
+* `workspaces/frontend/index.html`
+* `workspaces/backend/main-api/app.py`
+* `workspaces/backend/worker/tasks.py`
 
 ### Tools
 
