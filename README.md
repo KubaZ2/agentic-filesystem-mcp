@@ -32,6 +32,7 @@ agentic-filesystem-mcp [OPTIONS]
 ### Path Resolution Examples
 
 **Using `--root`**
+
 The `--root` option sets a single directory as the root of the server. The agent accesses files directly via their relative paths within this directory. You can also use relative paths, such as `.`, to serve your current working directory.
 
 ```bash
@@ -41,6 +42,7 @@ If your current directory contains `main.py` and `src/index.ts`, the agent acces
 * `main.py`
 * `src/index.ts`
 
+
 ```bash
 agentic-filesystem-mcp --root /var/www/my-app
 ```
@@ -49,6 +51,7 @@ If `/var/www/my-app` contains `app.js` and `components/Button.tsx`, they are acc
 * `components/Button.tsx`
 
 **Using `--mount`**
+
 The `--mount` option maps physical directories to virtual mount points, allowing you to securely expose multiple distinct directories to the agent at once.
 
 ```bash
@@ -59,6 +62,7 @@ If `/var/www/react-app` contains `package.json` and `/opt/api-server` contains `
 * `backend/main.py`
 
 **Nested Mount Points**
+
 You can specify highly nested virtual paths as mount points and safely overlap them to build complex, unified virtual file trees.
 
 ```bash
