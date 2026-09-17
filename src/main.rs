@@ -49,7 +49,8 @@ async fn main() -> Result<()> {
 
     let dir = match (args.root, args.mount) {
         (Some(root), None) => {
-            let dir = open_dir(root.as_ref())?;
+            let dir = open_dir(root.as_ref())
+                .with_context(|| format!("Error opening root path '{}'", root.display()))?;
 
             VfsDirBuilder::from_root(dir).build()
         }
@@ -64,13 +65,27 @@ async fn main() -> Result<()> {
 
             for chunk in chunks {
                 let mount_point = &chunk[0];
-                let root_path = &chunk[1];
+                let root_path = Path::new(&chunk[1]);
 
-                let dir = open_dir(root_path.as_ref())?;
+                let dir = open_dir(root_path).with_context(|| {
+                    format!(
+                        "Error opening root path '{}' for mount point '{}'",
+                        root_path.display(),
+                        mount_point.display(),
+                    )
+                })?;
 
-                let mount_path = sanitize_path(mount_point)?;
+                let mount_path = sanitize_path(mount_point).with_context(|| {
+                    format!("Error sanitizing mount point '{}'", mount_point.display(),)
+                })?;
 
-                builder.mount_dir(mount_path, dir)?;
+                builder.mount_dir(mount_path, dir).with_context(|| {
+                    format!(
+                        "Error mounting root path '{}' at mount point '{}'",
+                        root_path.display(),
+                        mount_point.display(),
+                    )
+                })?;
             }
 
             builder.build()
@@ -93,7 +108,7 @@ async fn main() -> Result<()> {
 
 fn open_dir(path: &Path) -> Result<Dir> {
     Dir::open_ambient_dir(path, ambient_authority())
-        .with_context(|| format!("Error opening directory {}", path.display()))
+        .with_context(|| format!("Error opening directory '{}'", path.display()))
 }
 
 fn log_info(message: &str) {
