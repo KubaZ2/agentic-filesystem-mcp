@@ -163,6 +163,12 @@ In this example, the agent sees a single virtual `workspaces` directory and acce
     - `path` (string): Path to the file or directory to remove
     - `recursive` (boolean, optional, default: false): MUST be set to `true` to remove a non-empty directory
 
+- **stat**
+  - Gets information about a file or directory, including its file type, size, creation time, modification time, access time, and permissions
+  - Inputs:
+    - `path` (string): The path of the file or directory to get information about
+  - Reports symlinks without following them
+
 ## 🔐 Security Architecture
 
 This server relies heavily on `cap_std::fs::Dir`. Root directories are opened as "ambient directories" and all subsequent tool executions are mapped to these capability objects.
