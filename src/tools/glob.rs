@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BinaryHeap, sync::Arc};
+use std::{cmp::Reverse, collections::BinaryHeap, fmt::Write, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use ignore::overrides::OverrideBuilder;
@@ -71,7 +71,8 @@ impl Filesystem {
 
         let mut total_results: usize = 0;
 
-        let mut results = BinaryHeap::new();
+        let mut results: BinaryHeap<(Reverse<cap_std::time::SystemTime>, PathBuf)> =
+            BinaryHeap::new();
 
         walk::run(&[r#override], &data.dir, path, |entry| {
             let (entry, entry_path) = match entry {
@@ -90,11 +91,23 @@ impl Filesystem {
                 }
             };
 
-            let display_path = entry_path.strip_prefix(path)?.display().to_string();
+            let display_path = entry_path.strip_prefix(path)?;
 
             total_results += 1;
 
-            results.push(Reverse((modified_time, display_path)));
+            if results.len() == results_limit
+                && let Some(worst) = results.peek()
+            {
+                let current = (Reverse(modified_time), display_path);
+
+                let worst = (worst.0, worst.1.as_path());
+
+                if current >= worst {
+                    return Ok(());
+                }
+            }
+
+            results.push((Reverse(modified_time), display_path.to_path_buf()));
 
             if results.len() > results_limit {
                 results.pop();
@@ -121,9 +134,8 @@ impl Filesystem {
             result_count, total_results
         );
 
-        for Reverse((_, path)) in &results.into_sorted_vec()[offset..] {
-            response.push_str(path);
-            response.push('\n');
+        for (_, path) in &results.into_sorted_vec()[offset..] {
+            writeln!(&mut response, "{}", path.display()).unwrap();
         }
 
         Ok(response)
@@ -494,7 +506,7 @@ mod tests {
         assert_eq!(
             result,
             format!(
-                "Showing 4 result(s) (out of 4 found in total):\n.gitignore\nignored_dir{}file.txt\nignored_dir\nvisible.txt\n",
+                "Showing 4 result(s) (out of 4 found in total):\n.gitignore\nignored_dir\nignored_dir{}file.txt\nvisible.txt\n",
                 std::path::MAIN_SEPARATOR,
             )
         );

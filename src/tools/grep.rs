@@ -1,10 +1,10 @@
-use std::{cmp::Reverse, collections::BinaryHeap, sync::Arc};
+use std::{cmp::Reverse, collections::BinaryHeap, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use grep::{
     printer::{StandardBuilder, SummaryBuilder},
     regex::RegexMatcherBuilder,
-    searcher::{BinaryDetection, SearcherBuilder},
+    searcher::{BinaryDetection, LineIter, SearcherBuilder},
 };
 use ignore::overrides::OverrideBuilder;
 use rmcp::{
@@ -60,12 +60,12 @@ struct GrepParams {
     after_context: Option<usize>,
 
     #[schemars(
-        description = "The maximum number of files (not matches) to return. Useful for preventing token overflow when a pattern matches thousands of files/lines.\n\nDefaults to `100` if not specified."
+        description = "The maximum number of lines to return. Useful for preventing token overflow when a pattern matches thousands of files/lines.\n\nDefaults to `100` if not specified."
     )]
     limit: Option<usize>,
 
     #[schemars(
-        description = "The number of files (not matches) to skip. Used in combination with limit to paginate through large sets of matching files.\n\nDefaults to `0` if not specified."
+        description = "The number of lines to skip. Used in combination with limit to paginate through large sets of matching lines.\n\nDefaults to `0` if not specified."
     )]
     offset: Option<usize>,
 
@@ -154,9 +154,16 @@ impl Filesystem {
 
         let results_limit = offset + limit;
 
-        let mut total_results: usize = 0;
+        let mut total_lines: usize = 0;
 
-        let mut results = BinaryHeap::new();
+        type ResultEntry = (
+            Reverse<cap_std::time::SystemTime>,
+            Arc<Path>,
+            usize,
+            Vec<u8>,
+        );
+
+        let mut results: BinaryHeap<ResultEntry> = BinaryHeap::new();
 
         walk::run(&overrides, &data.dir, path, |entry| {
             let (entry, entry_path) = match entry {
@@ -232,41 +239,102 @@ impl Filesystem {
                 }
             };
 
-            let output = String::from_utf8_lossy(&data).into_owned();
+            #[inline]
+            fn may_fit(
+                results: &BinaryHeap<ResultEntry>,
+                results_limit: usize,
+                modified_time: cap_std::time::SystemTime,
+                display_path: &Path,
+                i: usize,
+            ) -> bool {
+                if results.len() == results_limit
+                    && let Some(worst) = results.peek()
+                {
+                    let current = (Reverse(modified_time), display_path, i);
 
-            total_results += 1;
+                    let worst = (worst.0, worst.1.as_ref(), worst.2);
 
-            results.push(Reverse((modified_time, display_path.to_path_buf(), output)));
+                    if current >= worst {
+                        return false;
+                    }
+                }
 
-            if results.len() > results_limit {
-                results.pop();
+                true
+            }
+
+            let mut line_iter = LineIter::new(b'\n', &data);
+
+            if !may_fit(&results, results_limit, modified_time, display_path, 0) {
+                total_lines += line_iter.count();
+
+                return Ok(());
+            }
+
+            let display_path_arc: Arc<Path> = Arc::from(display_path);
+
+            let mut line_enum = line_iter.by_ref().enumerate();
+
+            let Some((mut i, mut line)) = line_enum.next() else {
+                return Ok(());
+            };
+
+            loop {
+                total_lines += 1;
+
+                results.push((
+                    Reverse(modified_time),
+                    display_path_arc.clone(),
+                    i,
+                    line.to_vec(),
+                ));
+
+                if results.len() > results_limit {
+                    results.pop();
+                }
+
+                (i, line) = match line_enum.next() {
+                    Some(value) => value,
+                    None => break,
+                };
+
+                if !may_fit(&results, results_limit, modified_time, display_path, i) {
+                    total_lines += line_iter.count() + 1;
+
+                    break;
+                }
             }
 
             Ok(())
         })?;
 
-        if total_results == 0 {
+        if total_lines == 0 {
             return Ok("No results found regardless of the specified offset".to_string());
         }
 
         if offset >= results.len() {
             return Ok(format!(
                 "No results found at the specified offset (found {} in total)",
-                total_results
+                total_lines,
             ));
         }
 
-        let result_count = results.len() - offset;
+        let line_count = results.len() - offset;
 
         let mut response = format!(
-            "Showing {} result(s) (out of {} found in total):\n",
-            result_count, total_results
+            "Showing {} line(s) (out of {} found in total):\n",
+            line_count, total_lines
         );
 
         let page = &results.into_sorted_vec()[offset..];
 
-        for Reverse((_, _, output)) in page {
-            response.push_str(output);
+        for (_, _, _, line) in page {
+            for chunk in line.utf8_chunks() {
+                response.push_str(chunk.valid());
+
+                if !chunk.invalid().is_empty() {
+                    response.push(char::REPLACEMENT_CHARACTER);
+                }
+            }
         }
 
         Ok(response)
@@ -396,7 +464,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\ntest.txt:1:hello world\n"
+            "Showing 1 line(s) (out of 1 found in total):\ntest.txt:1:hello world\n"
         );
 
         Ok(())
@@ -426,7 +494,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\ntest.txt:1:hello one\ntest.txt:3:hello two\n"
+            "Showing 2 line(s) (out of 2 found in total):\ntest.txt:1:hello one\ntest.txt:3:hello two\n"
         );
 
         Ok(())
@@ -441,7 +509,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 2 result(s) (out of 2 found in total):\nb.txt:1:hello\na.txt:1:hello\n"
+            "Showing 2 line(s) (out of 2 found in total):\nb.txt:1:hello\na.txt:1:hello\n"
         );
 
         Ok(())
@@ -456,7 +524,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\ntest.txt\n"
+            "Showing 1 line(s) (out of 1 found in total):\ntest.txt\n"
         );
 
         Ok(())
@@ -471,7 +539,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\ntest.txt:2\n"
+            "Showing 1 line(s) (out of 1 found in total):\ntest.txt:2\n"
         );
 
         Ok(())
@@ -486,7 +554,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\ntest.txt:hello world\n"
+            "Showing 1 line(s) (out of 1 found in total):\ntest.txt:hello world\n"
         );
 
         Ok(())
@@ -501,7 +569,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\na.txt:1:hello\n"
+            "Showing 1 line(s) (out of 1 found in total):\na.txt:1:hello\n"
         );
 
         Ok(())
@@ -816,8 +884,8 @@ mod tests {
         let result = run_pagination_test(FILES_3, "hello", Some(1), None)?;
 
         assert!(
-            result.contains("Showing 1 result(s) (out of 3 found in total)"),
-            "Expected 1 result out of 3, got: {}",
+            result.contains("Showing 1 line(s) (out of 3 found in total)"),
+            "Expected 1 line out of 3, got: {}",
             result
         );
 
@@ -829,8 +897,8 @@ mod tests {
         let result = run_pagination_test(FILES_3, "hello", Some(2), None)?;
 
         assert!(
-            result.contains("Showing 2 result(s) (out of 3 found in total)"),
-            "Expected 2 results out of 3, got: {}",
+            result.contains("Showing 2 line(s) (out of 3 found in total)"),
+            "Expected 2 lines out of 3, got: {}",
             result
         );
 
@@ -859,8 +927,8 @@ mod tests {
         )?;
 
         assert!(
-            result.contains("Showing 2 result(s) (out of 2 found in total)"),
-            "Expected both results with offset=0, got: {}",
+            result.contains("Showing 2 line(s) (out of 2 found in total)"),
+            "Expected both lines with offset=0, got: {}",
             result
         );
 
@@ -872,8 +940,8 @@ mod tests {
         let result = run_pagination_test(FILES_3, "hello", None, Some(1))?;
 
         assert!(
-            result.contains("Showing 2 result(s) (out of 3 found in total)"),
-            "Expected 2 results after offset 1, got: {}",
+            result.contains("Showing 2 line(s) (out of 3 found in total)"),
+            "Expected 2 lines after offset 1, got: {}",
             result
         );
         assert!(
@@ -925,21 +993,21 @@ mod tests {
     fn test_grep_limit_and_offset_pagination() -> Result<()> {
         let page1 = run_pagination_test(FILES_5, "hello", Some(2), Some(0))?;
         assert!(
-            page1.contains("Showing 2 result(s) (out of 5 found in total)"),
+            page1.contains("Showing 2 line(s) (out of 5 found in total)"),
             "Page 1 expected 2 of 5, got: {}",
             page1
         );
 
         let page2 = run_pagination_test(FILES_5, "hello", Some(2), Some(2))?;
         assert!(
-            page2.contains("Showing 2 result(s) (out of 5 found in total)"),
+            page2.contains("Showing 2 line(s) (out of 5 found in total)"),
             "Page 2 expected 2 of 5, got: {}",
             page2
         );
 
         let page3 = run_pagination_test(FILES_5, "hello", Some(2), Some(4))?;
         assert!(
-            page3.contains("Showing 1 result(s) (out of 5 found in total)"),
+            page3.contains("Showing 1 line(s) (out of 5 found in total)"),
             "Page 3 expected 1 of 5, got: {}",
             page3
         );
@@ -958,8 +1026,8 @@ mod tests {
         let result = run_pagination_test(&[("a.txt", "hello\n")], "hello", Some(10), None)?;
 
         assert!(
-            result.contains("Showing 1 result(s) (out of 1 found in total)"),
-            "Expected 1 result (limit larger than available), got: {}",
+            result.contains("Showing 1 line(s) (out of 1 found in total)"),
+            "Expected 1 line (limit larger than available), got: {}",
             result
         );
 
@@ -991,7 +1059,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\nkept.txt:1:hello\n"
+            "Showing 1 line(s) (out of 1 found in total):\nkept.txt:1:hello\n"
         );
 
         Ok(())
@@ -1009,7 +1077,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 1 result(s) (out of 1 found in total):\nvisible.txt:1:hello\n"
+            "Showing 1 line(s) (out of 1 found in total):\nvisible.txt:1:hello\n"
         );
 
         Ok(())
@@ -1032,7 +1100,7 @@ mod tests {
         assert_eq!(
             result,
             format!(
-                "Showing 3 result(s) (out of 3 found in total):\n.gitignore:2:hello\nignored_dir{}file.txt:1:hello\nvisible.txt:1:hello\n",
+                "Showing 3 line(s) (out of 3 found in total):\n.gitignore:2:hello\nignored_dir{}file.txt:1:hello\nvisible.txt:1:hello\n",
                 std::path::MAIN_SEPARATOR,
             )
         );
@@ -1055,7 +1123,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 2 result(s) (out of 2 found in total):\nignored.txt:1:hello\nvisible.txt:1:hello\n"
+            "Showing 2 line(s) (out of 2 found in total):\nignored.txt:1:hello\nvisible.txt:1:hello\n"
         );
 
         Ok(())
@@ -1072,7 +1140,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "Showing 2 result(s) (out of 2 found in total):\n.hidden.txt:1:hello\nvisible.txt:1:hello\n"
+            "Showing 2 line(s) (out of 2 found in total):\n.hidden.txt:1:hello\nvisible.txt:1:hello\n"
         );
 
         Ok(())
@@ -1094,7 +1162,7 @@ mod tests {
         assert_eq!(
             result,
             format!(
-                "Showing 1 result(s) (out of 1 found in total):\na{}visible.txt:1:hello\n",
+                "Showing 1 line(s) (out of 1 found in total):\na{}visible.txt:1:hello\n",
                 std::path::MAIN_SEPARATOR,
             )
         );
