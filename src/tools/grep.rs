@@ -239,13 +239,14 @@ impl Filesystem {
                 }
             };
 
-            let mut display_path_arc: Option<Arc<Path>> = None;
-
-            let mut line_iter = LineIter::new(b'\n', &data);
-
-            for (i, line) in line_iter.by_ref().enumerate() {
-                total_lines += 1;
-
+            #[inline]
+            fn may_fit(
+                results: &BinaryHeap<ResultEntry>,
+                results_limit: usize,
+                modified_time: cap_std::time::SystemTime,
+                display_path: &Path,
+                i: usize,
+            ) -> bool {
                 if results.len() == results_limit
                     && let Some(worst) = results.peek()
                 {
@@ -254,14 +255,31 @@ impl Filesystem {
                     let worst = (worst.0, worst.1.as_ref(), worst.2);
 
                     if current >= worst {
-                        total_lines += line_iter.count();
-
-                        break;
+                        return false;
                     }
                 }
 
-                let display_path_arc =
-                    display_path_arc.get_or_insert_with(|| Arc::from(display_path));
+                true
+            }
+
+            let mut line_iter = LineIter::new(b'\n', &data);
+
+            if !may_fit(&results, results_limit, modified_time, display_path, 0) {
+                total_lines += line_iter.count();
+
+                return Ok(());
+            }
+
+            let display_path_arc: Arc<Path> = Arc::from(display_path);
+
+            let mut line_enum = line_iter.by_ref().enumerate();
+
+            let Some((mut i, mut line)) = line_enum.next() else {
+                return Ok(());
+            };
+
+            loop {
+                total_lines += 1;
 
                 results.push((
                     Reverse(modified_time),
@@ -272,6 +290,17 @@ impl Filesystem {
 
                 if results.len() > results_limit {
                     results.pop();
+                }
+
+                (i, line) = match line_enum.next() {
+                    Some(value) => value,
+                    None => break,
+                };
+
+                if !may_fit(&results, results_limit, modified_time, display_path, i) {
+                    total_lines += line_iter.count() + 1;
+
+                    break;
                 }
             }
 
