@@ -116,8 +116,8 @@ In this example, the agent sees a single virtual `workspaces` directory and acce
     - `output_mode` (string, optional, default: "content"): One of "content", "files_with_matches", "count"
     - `before_context` (number, optional, default: 0): Lines before each match (requires output_mode=content)
     - `after_context` (number, optional, default: 0): Lines after each match (requires output_mode=content)
-    - `limit` (number, optional, default: 100): Maximum number of files to return
-    - `offset` (number, optional, default: 0): Number of files to skip
+    - `limit` (number, optional, default: 100): Maximum number of lines to return
+    - `offset` (number, optional, default: 0): Number of lines to skip
     - `multiline` (boolean, optional, default: false): Enable multiline mode
     - `show_line_numbers` (boolean, optional, default: true): Show line numbers (requires output_mode=content)
   - Results are ordered by file modification time
