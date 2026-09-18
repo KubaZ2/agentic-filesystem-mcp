@@ -241,7 +241,9 @@ impl Filesystem {
 
             let mut display_path_arc: Option<Arc<Path>> = None;
 
-            for (i, line) in LineIter::new(b'\n', &data).enumerate() {
+            let mut line_iter = LineIter::new(b'\n', &data);
+
+            for (i, line) in line_iter.by_ref().enumerate() {
                 total_lines += 1;
 
                 if results.len() == results_limit
@@ -252,12 +254,14 @@ impl Filesystem {
                     let worst = (worst.0, worst.1.as_ref(), worst.2);
 
                     if current >= worst {
-                        continue;
+                        total_lines += line_iter.count();
+
+                        break;
                     }
                 }
 
                 let display_path_arc =
-                    display_path_arc.get_or_insert_with(|| Arc::from(display_path.to_path_buf()));
+                    display_path_arc.get_or_insert_with(|| Arc::from(display_path));
 
                 results.push((
                     Reverse(modified_time),
