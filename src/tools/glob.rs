@@ -135,9 +135,7 @@ impl Filesystem {
         );
 
         for (_, path) in &results.into_sorted_vec()[offset..] {
-            write!(&mut response, "{}", path.display()).unwrap();
-
-            response.push('\n');
+            writeln!(&mut response, "{}", path.display()).unwrap();
         }
 
         Ok(response)
