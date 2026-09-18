@@ -65,7 +65,7 @@ struct GrepParams {
     limit: Option<usize>,
 
     #[schemars(
-        description = "The number of lines to skip. Used in combination with limit to paginate through large sets of matching files.\n\nDefaults to `0` if not specified."
+        description = "The number of lines to skip. Used in combination with limit to paginate through large sets of matching lines.\n\nDefaults to `0` if not specified."
     )]
     offset: Option<usize>,
 
