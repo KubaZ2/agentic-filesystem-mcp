@@ -1,0 +1,50 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":gitSignOff",
+    ":disableRateLimiting",
+    "helpers:pinGitHubActionDigests",
+    "abandonments:recommended"
+  ],
+  "dependencyDashboard": true,
+  "rebaseWhen": "conflicted",
+  "nix": {
+    "enabled": true,
+    "lockFileMaintenance": {
+      "enabled": true
+    }
+  },
+  "major": {
+    "dependencyDashboardApproval": true
+  },
+  "packageRules": [
+    {
+      "description": "Group all non-major Cargo crate updates into one PR",
+      "matchManagers": [ "cargo" ],
+      "matchUpdateTypes": [ "minor", "patch", "pin", "digest" ],
+      "groupName": "Cargo non-major"
+    },
+    {
+      "description": "Rust toolchain update",
+      "matchManagers": [ "rust-toolchain" ],
+      "groupName": "rust-toolchain",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Nixpkgs update",
+      "matchManagers": [ "nix" ],
+      "matchUpdateTypes": [ "lockFileMaintenance" ],
+      "schedule": [ "at any time" ],
+      "recreateWhen": "auto",
+      "groupName": "nixpkgs",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Group non-major GitHub Actions updates",
+      "matchManagers": [ "github-actions" ],
+      "matchUpdateTypes": [ "minor", "patch", "pin", "digest" ],
+      "groupName": "GitHub Actions non-major"
+    }
+  ]
+}
