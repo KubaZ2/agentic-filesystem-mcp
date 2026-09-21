@@ -1,6 +1,8 @@
 use std::{
+    ffi::OsString,
     io::{BufRead, BufReader},
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::Result;
@@ -16,12 +18,20 @@ pub enum RunEntry<'a> {
     Error(anyhow::Error),
 }
 
-fn walk<F>(
-    overrides: &[Override],
-    current_dir: &VfsDir,
-    current_path: &Path,
-    gitignores: &[Gitignore],
+struct DataItem {
+    parent_dir: VfsDir,
+    current_dir_name: OsString,
+    current_dir_path: PathBuf,
+    base_gitignores: Arc<[Gitignore]>,
+}
+
+fn walk_dir<F>(
+    current_dir: VfsDir,
+    current_dir_path: PathBuf,
     on_match: &mut F,
+    data: &mut Vec<DataItem>,
+    base_gitignores: Arc<[Gitignore]>,
+    overrides: &[Override],
 ) -> Result<()>
 where
     F: FnMut(RunEntry) -> Result<()>,
@@ -31,7 +41,7 @@ where
         Err(err) => {
             on_match(RunEntry::Error(anyhow::anyhow!(
                 "Failed to read directory {:?}: {}",
-                current_path,
+                current_dir_path,
                 err
             )))?;
             return Ok(());
@@ -44,7 +54,7 @@ where
             Err(err) => {
                 on_match(RunEntry::Error(anyhow::anyhow!(
                     "Failed to read directory entry in {:?}: {}",
-                    current_path,
+                    current_dir_path,
                     err
                 )))?;
                 continue;
@@ -53,7 +63,7 @@ where
 
         let entry_name = entry.file_name();
 
-        let entry_path = current_path.join(&entry_name);
+        let entry_path = current_dir_path.join(&entry_name);
 
         let is_dir = entry.file_type().is_ok_and(|ft| ft.is_dir());
 
@@ -75,7 +85,7 @@ where
         }
 
         if !is_ignored && !is_whitelisted {
-            for gitignore in gitignores.iter().rev() {
+            for gitignore in base_gitignores.iter().rev() {
                 match gitignore.matched(&entry_path, is_dir) {
                     ignore::Match::Ignore(_) => {
                         is_ignored = true;
@@ -102,21 +112,13 @@ where
             on_match(RunEntry::Match(&entry, &entry_path))?;
         }
 
-        if is_dir && let Ok(new_sub_dir) = entry.open_dir() {
-            if let Some(gitignore) = read_gitignore_safe(&new_sub_dir, &entry_path, on_match)? {
-                let mut new_gitignores = gitignores.to_vec();
-                new_gitignores.push(gitignore);
-
-                walk(
-                    overrides,
-                    &new_sub_dir,
-                    &entry_path,
-                    &new_gitignores,
-                    on_match,
-                )?;
-            } else {
-                walk(overrides, &new_sub_dir, &entry_path, gitignores, on_match)?;
-            }
+        if is_dir {
+            data.push(DataItem {
+                parent_dir: current_dir.clone(),
+                current_dir_name: entry_name,
+                current_dir_path: entry_path,
+                base_gitignores: base_gitignores.clone(),
+            });
         }
     }
 
@@ -176,13 +178,56 @@ where
         };
     }
 
-    walk(
-        overrides,
-        &current_dir,
-        &current_dir_path,
-        &base_gitignores,
+    let mut data = vec![];
+
+    walk_dir(
+        current_dir.clone(),
+        current_dir_path.clone(),
         &mut on_match,
-    )
+        &mut data,
+        Arc::from(base_gitignores),
+        overrides,
+    )?;
+
+    while let Some(DataItem {
+        parent_dir,
+        current_dir_name,
+        current_dir_path,
+        mut base_gitignores,
+    }) = data.pop()
+    {
+        let current_dir = match parent_dir.open_dir(&current_dir_name) {
+            Ok(dir) => dir,
+            Err(err) => {
+                on_match(RunEntry::Error(anyhow::anyhow!(
+                    "Failed to open directory {:?}: {}",
+                    current_dir_path,
+                    err
+                )))?;
+                continue;
+            }
+        };
+
+        if let Some(gitignore) =
+            read_gitignore_safe(&current_dir, &current_dir_path, &mut on_match)?
+        {
+            let mut new_gitignores = base_gitignores.to_vec();
+            new_gitignores.push(gitignore);
+
+            base_gitignores = Arc::from(new_gitignores);
+        }
+
+        walk_dir(
+            current_dir,
+            current_dir_path,
+            &mut on_match,
+            &mut data,
+            base_gitignores,
+            overrides,
+        )?;
+    }
+
+    Ok(())
 }
 
 fn read_gitignore_safe<F>(
