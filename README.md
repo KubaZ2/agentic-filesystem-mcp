@@ -13,7 +13,7 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 
 ## 🎬 Demo
 
-<video src="resources/demo.mp4" controls></video>
+<video src="resources/demo.mp4" controls width="630" height="300"></video>
 
 ## 📦 Installation
 
