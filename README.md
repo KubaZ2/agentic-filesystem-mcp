@@ -9,7 +9,7 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 * **Secure by Default:** Uses [cap-std](https://github.com/bytecodealliance/cap-std) to sandbox all filesystem access. Agents cannot traverse outside the explicitly provided root directories, preventing path traversal vulnerabilities.
 * **LLM-Optimized:** Features like pagination (`limit`/`offset`), exact string replacement (`edit`), and line numbering prevent context window overflow when working with large files or directories.
 * **Smart Searching:** Both `grep` and `glob` tools natively respect `.gitignore` files and hidden directories.
-* **Media Support:** The `read` tool intelligently handles binary files, returning images (`png`, `jpg`, `svg`, etc.) and audio (`mp3`, `wav`, etc.) directly.
+* **Media Support:** Seamlessly handles both text and media files.
 
 ## 📦 Installation
 
@@ -84,9 +84,10 @@ In this example, the agent sees a single virtual `workspaces` directory and acce
 ### Tools
 
 - **read**
-  - Reads the contents of a file. Supports text files and media files (images and audio)
+  - Reads the contents of a file. Supports text files and media files
   - Inputs:
     - `path` (string): File location
+    - `type` (string): The type of content to read. `text` for text files, `media` for media files
     - `limit` (number, optional, default: 100): Maximum number of lines to read, for text files
     - `offset` (number, optional, default: 0): Number of lines to skip before reading, for text files
     - `show_line_numbers` (boolean, optional, default: true): Whether to prepend 1-indexed line numbers, for text files
@@ -113,7 +114,7 @@ In this example, the agent sees a single virtual `workspaces` directory and acce
     - `pattern` (string): The regex pattern to search for
     - `path` (string, optional, default: "."): Directory or file to search in
     - `glob` (string, optional): Glob pattern to filter files (e.g., `*.{ts,tsx}`)
-    - `output_mode` (string, optional, default: "content"): One of "content", "files_with_matches", "count"
+    - `output_mode` (string, optional, default: `content`): One of `content`, `files_with_matches`, `count`
     - `before_context` (number, optional, default: 0): Lines before each match (requires output_mode=content)
     - `after_context` (number, optional, default: 0): Lines after each match (requires output_mode=content)
     - `limit` (number, optional, default: 100): Maximum number of lines to return
