@@ -1,5 +1,6 @@
 use std::{
     io::{BufRead, BufReader},
+    path::Path,
     sync::Arc,
 };
 
@@ -7,17 +8,31 @@ use anyhow::{Context, Result};
 use cap_std::fs::File;
 use rmcp::{
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
+    model::{CallToolResult, ContentBlock, ResourceContents},
     schemars, tool, tool_router,
 };
 use std::fmt::Write as _;
 
 use crate::{Filesystem, FilesystemData, MimeType, path_sanitizer::sanitize_path};
 
+#[derive(serde::Deserialize, schemars::JsonSchema, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+#[schemars(inline)]
+#[schemars(extend("type" = "string"))]
+enum ContentType {
+    Text,
+    Media,
+}
+
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ReadParams {
     #[schemars(description = "The path to the file to read.")]
     path: String,
+
+    #[schemars(
+        description = "The type of content to read. `text` for text files, `media` for media files."
+    )]
+    r#type: ContentType,
 
     #[schemars(
         description = "The maximum number of lines to read. Useful for preventing token overflow when reading very large text files. Ignored for media files.\n\nDefaults to `100` if not specified."
@@ -37,9 +52,7 @@ struct ReadParams {
 
 #[tool_router(router = tool_router_read, vis = "pub")]
 impl Filesystem {
-    #[tool(
-        description = "Reads the contents of a file. Supports text files and media files (images and audio)."
-    )]
+    #[tool(description = "Reads the contents of a file. Supports text files and media files.")]
     async fn read(&self, parameters: Parameters<ReadParams>) -> CallToolResult {
         let data = self.data.clone();
         Self::run("read", move || Self::try_read(data, parameters)).await
@@ -53,34 +66,42 @@ impl Filesystem {
 
         let file = data.dir.open(path).context("Failed to open the file")?;
 
-        if let Some(extension) = path.extension()
-            && let Some(extension) = extension.to_str()
-            && let Some(media_mime_type) =
-                data.media_mime_types.get(extension.to_lowercase().as_str())
-        {
-            return Self::try_read_media(media_mime_type, file);
+        match parameters.0.r#type {
+            ContentType::Text => Self::try_read_text(file, parameters),
+            ContentType::Media => Self::try_read_media(&data, path, file),
         }
-
-        Self::try_read_text(file, parameters)
     }
 
-    fn try_read_media(mime_type: &MimeType, mut file: File) -> Result<CallToolResult> {
-        let data = Vec::new();
+    fn try_read_media(
+        data: &FilesystemData,
+        file_path: &Path,
+        mut file: File,
+    ) -> Result<CallToolResult> {
+        let content = Vec::new();
 
         let mut encoder =
-            base64::write::EncoderWriter::new(data, &base64::engine::general_purpose::STANDARD);
+            base64::write::EncoderWriter::new(content, &base64::engine::general_purpose::STANDARD);
 
         std::io::copy(&mut file, &mut encoder).context("Failed to encode the media file")?;
 
-        let data = encoder
+        let content = encoder
             .finish()
             .context("Failed to finish encoding the media file")?;
 
-        let data = String::from_utf8(data)?;
+        let mime_type = file_path.extension().and_then(|ext| {
+            ext.to_str()
+                .and_then(|ext_str| data.media_mime_types.get(ext_str.to_lowercase().as_str()))
+        });
+
+        let content = String::from_utf8(content)?;
 
         Ok(CallToolResult::success(vec![match mime_type {
-            MimeType::Image(mime) => ContentBlock::image(&data, *mime),
-            MimeType::Audio(mime) => ContentBlock::audio(&data, *mime),
+            Some(MimeType::Image(mime)) => ContentBlock::image(&content, *mime),
+            Some(MimeType::Audio(mime)) => ContentBlock::audio(&content, *mime),
+            None => ContentBlock::resource(
+                ResourceContents::blob(&content, format!("file:///{}", file_path.display()))
+                    .with_mime_type("application/octet-stream"),
+            ),
         }]))
     }
 
@@ -88,6 +109,7 @@ impl Filesystem {
         file: File,
         Parameters(ReadParams {
             path: _,
+            r#type: _,
             limit,
             offset,
             show_line_numbers,
