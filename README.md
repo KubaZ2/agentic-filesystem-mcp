@@ -175,6 +175,42 @@ In this example, the agent sees a single virtual `workspaces` directory and acce
   - Includes file type, size, creation time, modification time, access time, and permissions
   - Reports symlinks without following them
 
+## Usage with Claude Desktop
+
+Add this to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "/path/to/agentic-filesystem-mcp",
+      "args": [
+        "--root",
+        "/path/to/my/favorite/directory",
+      ]
+    }
+  }
+}
+```
+
+## Usage with VS Code
+
+Add this to your `mcp.json`:
+
+```json
+{
+  "servers": {
+    "filesystem": {
+      "command": "/path/to/agentic-filesystem-mcp",
+      "args": [
+        "--root",
+        "/path/to/my/favorite/directory"
+      ]
+    }
+  }
+}
+```
+
 ## 🔐 Security Architecture
 
 This server relies heavily on `cap_std::fs::Dir`. Root directories are opened as "ambient directories" and all subsequent tool executions are mapped to these capability objects.
