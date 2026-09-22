@@ -11,6 +11,10 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 * **Smart Searching:** Both `grep` and `glob` tools natively respect `.gitignore` files and hidden directories.
 * **Media Support:** Seamlessly handles both text and media files.
 
+## 🎬 Demo
+
+https://github.com/user-attachments/assets/d573ffe7-0038-439a-89a0-4742408da15f
+
 ## 📦 Installation
 
 Download the latest release from [Releases](https://github.com/KubaZ2/agentic-filesystem-mcp/releases/latest).
@@ -170,6 +174,42 @@ In this example, the agent sees a single virtual `workspaces` directory and acce
     - `path` (string): The path of the file or directory to get information about
   - Includes file type, size, creation time, modification time, access time, and permissions
   - Reports symlinks without following them
+
+## Usage with Claude Desktop
+
+Add this to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "/path/to/agentic-filesystem-mcp",
+      "args": [
+        "--root",
+        "/path/to/my/favorite/directory"
+      ]
+    }
+  }
+}
+```
+
+## Usage with VS Code
+
+Add this to your `mcp.json`:
+
+```json
+{
+  "servers": {
+    "filesystem": {
+      "command": "/path/to/agentic-filesystem-mcp",
+      "args": [
+        "--root",
+        "/path/to/my/favorite/directory"
+      ]
+    }
+  }
+}
+```
 
 ## 🔐 Security Architecture
 
