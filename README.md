@@ -13,7 +13,7 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 
 ## 🎬 Demo
 
-<video src="https://raw.githubusercontent.com/KubaZ2/agentic-filesystem-mcp/refs/heads/improve/readme/resources/demo.mp4" controls width="630" height="300"></video>
+https://github.com/user-attachments/assets/d573ffe7-0038-439a-89a0-4742408da15f
 
 ## 📦 Installation
 
