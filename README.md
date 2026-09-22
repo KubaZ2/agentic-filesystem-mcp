@@ -11,6 +11,10 @@ Built with security and AI-context limits in mind, it utilizes capability-based 
 * **Smart Searching:** Both `grep` and `glob` tools natively respect `.gitignore` files and hidden directories.
 * **Media Support:** Seamlessly handles both text and media files.
 
+## 🎬 Demo
+
+![Demo](resources/demo.mp4)
+
 ## 📦 Installation
 
 Download the latest release from [Releases](https://github.com/KubaZ2/agentic-filesystem-mcp/releases/latest).
