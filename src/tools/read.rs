@@ -193,6 +193,7 @@ mod tests {
 
         let params = Parameters(ReadParams {
             path: "test.txt".to_string(),
+            r#type: ContentType::Text,
             limit,
             offset,
             show_line_numbers,
@@ -304,6 +305,7 @@ mod tests {
 
         let params = Parameters(ReadParams {
             path: file_path,
+            r#type: ContentType::Media,
             limit: None,
             offset: None,
             show_line_numbers: None,
@@ -370,6 +372,7 @@ mod tests {
 
         let params = Parameters(ReadParams {
             path: file_path,
+            r#type: ContentType::Media,
             limit: None,
             offset: None,
             show_line_numbers: None,
@@ -413,5 +416,41 @@ mod tests {
     #[test]
     fn test_read_audio_file_flac() -> Result<()> {
         test_read_audio_file("flac", "audio/flac")
+    }
+
+    #[test]
+    fn test_read_media_unknown_extension() -> Result<()> {
+        let (_tempdir, data) = setup_test_fs()?;
+
+        let blob_data = vec![0u8, 1, 2, 3, 4, 5];
+        let file_path = "test.bin";
+
+        data.dir.write(file_path, &blob_data)?;
+
+        let params = Parameters(ReadParams {
+            path: file_path.to_string(),
+            r#type: ContentType::Media,
+            limit: None,
+            offset: None,
+            show_line_numbers: None,
+        });
+
+        let result = Filesystem::try_read(data.clone(), params)?;
+        let expected_base64 = base64::engine::general_purpose::STANDARD.encode(&blob_data);
+
+        let expected_sanitized_path = sanitize_path(file_path)?;
+
+        assert_eq!(
+            result,
+            CallToolResult::success(vec![ContentBlock::resource(
+                ResourceContents::blob(
+                    &expected_base64,
+                    format!("file:///{}", expected_sanitized_path.display())
+                )
+                .with_mime_type("application/octet-stream")
+            )])
+        );
+
+        Ok(())
     }
 }
