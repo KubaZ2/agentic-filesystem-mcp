@@ -186,7 +186,7 @@ Add this to your `claude_desktop_config.json`:
       "command": "/path/to/agentic-filesystem-mcp",
       "args": [
         "--root",
-        "/path/to/my/favorite/directory",
+        "/path/to/my/favorite/directory"
       ]
     }
   }
