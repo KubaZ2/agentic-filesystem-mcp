@@ -35,6 +35,12 @@
       "dependencyDashboardApproval": true
     },
     {
+      "description": "Nixpkgs update",
+      "matchManagers": [ "nix" ],
+      "matchUpdateTypes": [ "lockFileMaintenance" ],
+      "groupName": "nixpkgs",
+    },
+    {
       "description": "Group non-major GitHub Actions updates",
       "matchManagers": [ "github-actions" ],
       "matchUpdateTypes": [ "minor", "patch", "pin", "digest" ],
