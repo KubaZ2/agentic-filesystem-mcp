@@ -12,10 +12,7 @@
   "nix": {
     "enabled": true,
     "lockFileMaintenance": {
-      "enabled": true,
-      "dependencyDashboardApproval": true,
-      "schedule": [ "at any time" ],
-      "recreateWhen": "auto"
+      "enabled": true
     }
   },
   "major": {
@@ -38,7 +35,10 @@
       "description": "Nixpkgs update",
       "matchManagers": [ "nix" ],
       "matchUpdateTypes": [ "lockFileMaintenance" ],
+      "schedule": [ "at any time" ],
+      "recreateWhen": "auto",
       "groupName": "nixpkgs",
+      "dependencyDashboardApproval": true
     },
     {
       "description": "Group non-major GitHub Actions updates",
