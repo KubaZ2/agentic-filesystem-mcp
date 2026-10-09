@@ -12,7 +12,10 @@
   "nix": {
     "enabled": true,
     "lockFileMaintenance": {
-      "enabled": true
+      "enabled": true,
+      "dependencyDashboardApproval": true,
+      "schedule": [ "at any time" ],
+      "recreateWhen": "auto"
     }
   },
   "major": {
@@ -29,15 +32,6 @@
       "description": "Rust toolchain update",
       "matchManagers": [ "rust-toolchain" ],
       "groupName": "rust-toolchain",
-      "dependencyDashboardApproval": true
-    },
-    {
-      "description": "Nixpkgs update",
-      "matchManagers": [ "nix" ],
-      "matchUpdateTypes": [ "lockFileMaintenance" ],
-      "schedule": [ "at any time" ],
-      "recreateWhen": "auto",
-      "groupName": "nixpkgs",
       "dependencyDashboardApproval": true
     },
     {
