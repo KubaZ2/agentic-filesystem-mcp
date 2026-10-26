@@ -51,9 +51,7 @@
       {
         default = rustPlatform.buildRustPackage {
           name = cargoToml.package.name;
-
           src = pkgs.lib.cleanSource ./.;
-
           cargoLock.lockFile = ./Cargo.lock;
         };
       }
