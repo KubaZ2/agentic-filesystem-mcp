@@ -3,7 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { nixpkgs, rust-overlay, ... }:
@@ -15,10 +18,7 @@
       "aarch64-darwin"
     ];
 
-    forAllArch = nixpkgs.lib.genAttrs supportedArch;
-  in
-  {
-    devShells = forAllArch (arch:
+    forAllArch = f: nixpkgs.lib.genAttrs supportedArch (arch:
       let
         overlays = [
           (import rust-overlay)
@@ -27,12 +27,34 @@
           system = arch;
           inherit overlays;
         };
+        toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      in
+      f { inherit pkgs toolchain; }
+    );
+
+    cargoToml = fromTOML (builtins.readFile ./Cargo.toml);
+  in
+  {
+    devShells = forAllArch ({ pkgs, toolchain }: {
+      default = pkgs.mkShell {
+        packages = [ toolchain ];
+      };
+    });
+
+    packages = forAllArch ({ pkgs, toolchain }:
+      let
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = toolchain;
+          rustc = toolchain;
+        };
       in
       {
-        default = pkgs.mkShell {
-          packages = with pkgs; [
-            (rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
-          ];
+        default = rustPlatform.buildRustPackage {
+          name = cargoToml.package.name;
+
+          src = pkgs.lib.cleanSource ./.;
+
+          cargoLock.lockFile = ./Cargo.lock;
         };
       }
     );
